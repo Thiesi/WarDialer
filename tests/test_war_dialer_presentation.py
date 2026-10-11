@@ -85,6 +85,13 @@ def _load_war_dialer():
 wd = _load_war_dialer()
 
 
+@pytest.fixture(autouse=True)
+def isolated_output_width(monkeypatch):
+    # main() changes this process-wide boundary, including on an undersized
+    # terminal exit. Each test starts with the normal launch default.
+    monkeypatch.setattr(wd, "_OUTPUT_WIDTH", 80)
+
+
 def _buffered_stdin(read_fd: int) -> io.TextIOWrapper:
     """Wraps a raw pipe fd the same way real `sys.stdin` is wrapped
     (TextIOWrapper over a BufferedReader over a FileIO), not a bare
