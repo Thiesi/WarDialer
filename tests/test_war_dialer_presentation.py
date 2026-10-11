@@ -93,6 +93,8 @@ def isolated_presentation_state(monkeypatch):
     monkeypatch.setattr(wd, "_OUTPUT_WIDTH", 80)
     monkeypatch.setattr(wd, "_ASCII_DECOR", False)
     monkeypatch.setattr(wd, "_MONOCHROME", False)
+    monkeypatch.setattr(wd, "_OUTPUT_ENCODING", "utf-8")
+    monkeypatch.setattr(wd, "_DEFAULT_ENCODING", "utf-8")
 
 
 def _buffered_stdin(read_fd: int) -> io.TextIOWrapper:

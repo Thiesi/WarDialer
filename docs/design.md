@@ -13,6 +13,17 @@ trust the stored ID only when that marker is present. An existing host-bound
 world still requires the matching token on every launch. Adoption preserves
 all existing player rows; each BBS uses its own world shared by its nodes.
 
+## Terminal encoding (WarDialer #4)
+
+Classic drop files default to CP437; standalone launches default to UTF-8.
+Display offers Automatic, UTF-8 and CP437, saved per caller alongside existing
+display preferences and retained across season/competition resets. NetBBS
+always receives UTF-8 and owns caller-side conversion; its encoding row is
+informational. CP437 substitutes for authored symbols are explicit and retain
+their display columns. Unsupported caller-name characters are transliterated
+only on output, leaving the stored Unicode name intact. Input remains menu
+hotkeys; crew names and insignia are chosen rather than entered as text.
+
 ## Classic host metadata (WarDialer #3)
 
 A positional DOOR32.SYS or DOOR.SYS filename supplies caller identity, terminal

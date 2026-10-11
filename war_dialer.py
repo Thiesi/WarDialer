@@ -92,6 +92,19 @@ DIM = f"{ESC}[2m"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-2]|\x1b[78HDM]")
 _OUTPUT_WIDTH = 80
 _CLASSIC_DROP_FILE: str | None = None
+_OUTPUT_ENCODING = "utf-8"
+_DEFAULT_ENCODING = "utf-8"
+DISPLAY_ENCODINGS = {"auto": "Automatic", "utf-8": "UTF-8", "cp437": "CP437"}
+# Single-column substitutes retain authored alignment and avoid CP437's low
+# control-byte symbols, which some terminals would interpret as commands.
+_CP437_TRANSLATION = str.maketrans({
+    "╭": "┌", "╮": "┐", "╯": "┘", "╰": "└",
+    "▁": "_", "▂": "▄", "▃": "▄", "▅": "█", "▆": "█", "▇": "█",
+    "◆": "*", "◈": "+", "◉": "@", "◇": "o", "○": ".", "●": "o",
+    "▮": "█", "▯": "░", "▚": "▒", "▲": "^", "▼": "v", "▸": ">", "›": ">",
+    "⟦": "[", "⟧": "]", "•": "·", "…": ".", "∿": "~", "≋": "≈",
+    "‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -475,9 +488,41 @@ def spark_ramp() -> str:
     return SPARK_ASCII if _ASCII_DECOR else SPARK
 
 
+def apply_display_encoding(encoding: str) -> None:
+    """Select the wire encoding; NetBBS owns its caller-side conversion."""
+    global _OUTPUT_ENCODING
+    effective = _DEFAULT_ENCODING if encoding == "auto" else encoding
+    if os.environ.get("NETBBS_DOOR_INFO") is not None:
+        effective = "utf-8"
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding=effective)
+    _OUTPUT_ENCODING = effective
+
+
+def _cp437_text(text: str) -> str:
+    """Map art and transliterate names without changing their display width."""
+    text = text.translate(_CP437_TRANSLATION)
+    try:
+        text.encode("cp437")
+        return text
+    except UnicodeEncodeError:
+        result = []
+        for char in text:
+            try:
+                char.encode("cp437")
+                result.append(char)
+            except UnicodeEncodeError:
+                width = _char_width(char)
+                folded = unicodedata.normalize("NFKD", char).encode("ascii", "ignore").decode("ascii")
+                result.append(folded[:width].ljust(width, "_") if width else "")
+        return "".join(result)
+
+
 def out(text: str = "") -> None:
     if _MONOCHROME:
         text = re.sub(r"\x1b\[[0-9;:]*m", "", text)
+    if _OUTPUT_ENCODING == "cp437":
+        text = _cp437_text(text)
     try:
         sys.stdout.write(text)
         sys.stdout.flush()
@@ -4693,22 +4738,25 @@ DISPLAY_KEYS = ('ascii_art', 'monochrome', 'fast')
 NPC_ART = {'patch': '(o)--[::]', 'relay': '<==[##]==>', 'spool': '[##]--{##}'}
 
 
-def read_display(conn: sqlite3.Connection, user_id: int) -> dict[str, bool]:
+def read_display(conn: sqlite3.Connection, user_id: int) -> dict[str, bool | str]:
     row = conn.execute("SELECT value FROM meta WHERE key=?", (f'display:{user_id}',)).fetchone()
     if row is None:
         return {}
     try:
         values = json.loads(row[0])
-        return {key: value for key, value in values.items() if key in DISPLAY_KEYS and type(value) is bool}
+        return {key: value for key, value in values.items()
+                if (key in DISPLAY_KEYS and type(value) is bool)
+                or (key == "encoding" and isinstance(value, str) and value in DISPLAY_ENCODINGS)}
     except (ValueError, AttributeError):
         return {}
 
 
-def apply_display(p: Palette, values: dict[str, bool]) -> None:
+def apply_display(p: Palette, values: dict[str, bool | str]) -> None:
     global _ASCII_DECOR, _MONOCHROME
     for key in DISPLAY_KEYS:
         setattr(p, key, values.get(key, p.default_ascii if key == 'ascii_art' else p.default_monochrome if key == 'monochrome' else False))
     _ASCII_DECOR, _MONOCHROME = p.ascii_art, p.monochrome
+    apply_display_encoding(values.get("encoding", "auto"))
 
 
 def do_display(p: Palette, conn: sqlite3.Connection, user_id: int, width: int, height: int) -> None:
@@ -4730,14 +4778,24 @@ def do_display(p: Palette, conn: sqlite3.Connection, user_id: int, width: int, h
                             badge(p, "ON" if on else "OFF",
                                   style=p.phosphor if on else p.grey)], inner - 4)
             rendered.append((rows + prose_rows(p, note, inner - 4, style=p.grey), True))
+        managed = os.environ.get("NETBBS_DOOR_INFO") is not None
+        encoding = "UTF-8 (NetBBS managed)" if managed else DISPLAY_ENCODINGS[values.get("encoding", "auto")]
+        rows = prose_rows(p, "Encoding: " + encoding, inner - 4, style=p.mint)
+        rows += prose_rows(p, "Match your terminal: Automatic, UTF-8 or CP437."
+                           if not managed else "NetBBS converts for your terminal.", inner - 4, style=p.grey)
+        rendered.append((rows, not managed))
         choice = pick_record_page(p, 'DISPLAY', [], width, height, rendered=rendered,
                                   trailing="free; survives seasons")
         if choice in 'BQ':
             return
-        key = DISPLAY_KEYS[int(choice) - 1]
         with _write_transaction(conn):
             values = read_display(conn, user_id)
-            values[key] = not values.get(key, p.default_ascii if key == 'ascii_art' else p.default_monochrome if key == 'monochrome' else False)
+            if choice == "4" and not managed:
+                encodings = tuple(DISPLAY_ENCODINGS)
+                values["encoding"] = encodings[(encodings.index(values.get("encoding", "auto")) + 1) % len(encodings)]
+            else:
+                key = DISPLAY_KEYS[int(choice) - 1]
+                values[key] = not values.get(key, p.default_ascii if key == 'ascii_art' else p.default_monochrome if key == 'monochrome' else False)
             conn.execute("INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                          (f'display:{user_id}', json.dumps(values)))
         apply_display(p, values)
@@ -6407,7 +6465,7 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--admin" in argv or any(arg.startswith("--admin=") for arg in argv):
         return admin_main(argv)
-    global _OUTPUT_WIDTH, _CLASSIC_DROP_FILE
+    global _OUTPUT_WIDTH, _CLASSIC_DROP_FILE, _DEFAULT_ENCODING
     parser = argparse.ArgumentParser(description="War Dialer BBS door")
     parser.add_argument("drop_file", nargs="?", help="DOOR32.SYS or DOOR.SYS filename")
     _CLASSIC_DROP_FILE = parser.parse_args(argv).drop_file
@@ -6422,6 +6480,8 @@ def main(argv=None) -> int:
         sys.stderr.write(f"War Dialer metadata: {_event_plain(str(exc.__cause__))[:300]}\n")
         out_line(str(exc))
         return 1
+    _DEFAULT_ENCODING = info.get("display_encoding", "utf-8") if "drop_file_type" in info else "utf-8"
+    apply_display_encoding("auto")
     palette = Palette(truecolor=info.get("color_depth") == "truecolor",
                       color_depth=info.get("color_depth"))
     palette.default_ascii = info.get("unicode_style", True) is False or info.get("color_depth") == "none"

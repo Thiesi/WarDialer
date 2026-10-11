@@ -13,8 +13,7 @@ Python 3.11's standard library. It needs a terminal of at least 40 columns by
 The game was extracted byte-for-byte from NetBBS main after its administration
 prerequisite ([NetBBS #1227](https://github.com/Thiesi/NetBBS/issues/1227)).
 See the [migration provenance](docs/migration.md) for the source commit and hash.
-NetBBS still ships its bundled copy. CP437 output and DOOR32 socket I/O
-are follow-up issues #4–#5.
+NetBBS still ships its bundled copy. DOOR32 socket I/O follows in issue #5.
 
 ## World and administration
 
@@ -58,7 +57,13 @@ number, so an alias change preserves the player. Renamed files are recognized
 by their contents. NetBBS's `NETBBS_DOOR_INFO` takes precedence whenever it is
 set. A malformed drop file stops the launch without creating a Guest player.
 Classic ANSI callers get the 16-color palette; standalone branding is neutral.
-This version still outputs UTF-8; CP437 output and socket I/O follow in #4/#5.
+Classic drop files default to CP437 output; a standalone launch defaults to
+UTF-8. In Display, Encoding cycles Automatic, UTF-8 and CP437 independently
+of the other preferences, and survives season/competition resets. NetBBS
+always receives UTF-8 and converts for its caller, so its encoding is managed.
+Saved names remain Unicode; unsupported display characters are transliterated
+without changing their column width. All input is single-key menus.
+Socket I/O follows in #5; use stdio for these setup recipes.
 
 Use one absolute `WAR_DIALER_DB_PATH` shared by every node of **one BBS**,
 outside its per-caller temporary directories. Different BBSes need separate
@@ -86,7 +91,7 @@ config: {
     cmd: /usr/bin/python3
     args: [ "/opt/doors/wardialer/war_dialer.py", "{dropFilePath}" ]
     io: stdio
-    encoding: utf8
+    encoding: cp437
     env: { WAR_DIALER_DB_PATH: "/var/lib/wardialer/world.db" }
 }
 ```
@@ -104,6 +109,7 @@ python -m pytest -q -n auto
 python -m pytest -q -m timing_sensitive
 python -I tools/check_stdlib_only.py
 python tools/door_gallery.py --open
+python tools/cp437_gallery.py --out build/cp437-gallery
 python scripts/war_dialer_balance.py --help
 ```
 
@@ -111,6 +117,8 @@ The gallery drives the real door and renders its screens at 80/64/40 columns
 with the ANSI emulator in `tools/ansi_to_html.py`. Windows pipe launches do
 not play a splash, so the Windows gallery omits that panel. A screen change
 needs visual review as well as layout tests.
+The CP437 gallery runs the complete encoding-test screen walk through the
+production byte encoder and ANSI emulator, including 40/64/80-column layouts.
 `tzdata` supplies named timezone data for tests on Windows; it is not a door
 import dependency. Without system timezone data, the door falls back to UTC.
 
