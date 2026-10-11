@@ -18,8 +18,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-from netbbs.doors.bundled import war_dialer as wd
+sys.path.insert(0, str(ROOT))
+import war_dialer as wd
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 SCENARIOS = {

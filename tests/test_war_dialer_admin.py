@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-DOOR = Path(__file__).resolve().parents[1] / "src/netbbs/doors/bundled/war_dialer.py"
+DOOR = Path(__file__).resolve().parents[1] / "war_dialer.py"
 spec = importlib.util.spec_from_file_location("war_dialer_admin_test", DOOR)
 wd = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = wd
@@ -100,6 +100,35 @@ def test_reset_retains_latest_hundred_audit_entries(world):
         saved = json.loads(conn.execute("SELECT value FROM meta WHERE key='sysop_audit'").fetchone()[0])
     assert len(saved) == 100 and saved[0]["sequence"] == 11
     assert saved[-1]["action"] == "reset competition"
+
+
+def test_failed_snapshot_validation_leaves_world_unchanged(world, tmp_path, monkeypatch):
+    wd.administer_world(world, "maintenance", maintenance=True)
+    before = wd.inspect_world(world)
+    snapshot = tmp_path / "snapshot.db"
+    inspect = wd.inspect_world
+    def reject_snapshot(path):
+        if Path(path) == snapshot:
+            raise wd.WorldStateError("snapshot validation failed")
+        return inspect(path)
+    monkeypatch.setattr(wd, "inspect_world", reject_snapshot)
+    with pytest.raises(wd.WorldStateError, match="snapshot validation"):
+        wd.administer_world(world, "reset", confirm=world.name, reason="test", snapshot=snapshot)
+    assert inspect(world) == before
+    assert not snapshot.exists()
+
+
+def test_failed_audit_rolls_back_mutation_and_keeps_recovery_snapshot(world, tmp_path, monkeypatch):
+    wd.administer_world(world, "maintenance", maintenance=True)
+    before = wd.inspect_world(world)
+    snapshot = tmp_path / "snapshot.db"
+    def fail_audit(*args, **kwargs):
+        raise sqlite3.OperationalError("audit write failed")
+    monkeypatch.setattr(wd, "_admin_audit", fail_audit)
+    with pytest.raises(sqlite3.Error, match="audit write failed"):
+        wd.administer_world(world, "reset", confirm=world.name, reason="test", snapshot=snapshot)
+    assert wd.inspect_world(world) == before
+    assert wd.inspect_world(snapshot)["stored_season"] == "1"
 
 
 def test_cli_runs_without_host_and_reports_json_errors(world, tmp_path):

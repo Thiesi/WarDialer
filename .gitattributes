@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.png binary
+# The release asset must retain its imported bytes on every checkout.
+war_dialer.py -text

@@ -1,13 +1,7 @@
-"""Render a bundled door's screens at every supported size and preset, as a page.
+"""Render War Dialer's screens at every supported size and preset, as a page.
 
-    python scripts/door_gallery.py voidrunner --out build/gallery --open
-    python scripts/door_gallery.py war_dialer --widths 80 64 40 --fresh
-
-Voidrunner is vendored from its own repository (issue #1216), and screen changes
-are reviewed there, with Thiesi/Voidrunner's `tools/door_gallery.py`. Its walks
-stay here too: `website_capture_door_screen.py` photographs the shipped release
-for www.netbbs.org through them, and a vendored bump is checked by building this
-gallery against the new file.
+    python tools/door_gallery.py --out build/gallery --open
+    python tools/door_gallery.py --widths 80 64 40 --fresh
 
 Why this exists: a door's presentation cannot be reviewed by reading a diff, and
 the test suite can only ever assert that a screen *fits* -- never that it looks
@@ -62,7 +56,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
-import website_ansi_to_html as term  # noqa: E402
+import ansi_to_html as term  # noqa: E402
 
 SPAN = re.compile(r'<span style="([^"]*)">(.*?)</span>')
 ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -143,63 +137,6 @@ WORKERS = 4  # panels are independent subprocesses; a gallery is 150+ of them.
 # stops there. `SHOWS` names what each walk's screen must say, and the build
 # refuses to publish a panel that does not say it.
 WALKS: dict[str, list[tuple[str, bytes]]] = {
-    "voidrunner": [
-        # (label, keys) or (label, keys, fixture). The default fixture is "base".
-        # The animated launch splash, in the presets that animate.
-        ("Launch splash", b"~"),
-        # A career saved mid-fight opens on the notice that says so, and waits
-        # for a key before it draws the fight (issue #641).
-        ("Journey Resumed", b"", "combat"),
-        ("Combat", b" ", "combat"),
-        # The same fight against a raider the ship cannot beat (issue #647): the
-        # OUTCLASSED row, and a Dump priced at half the hold.
-        ("Combat, outclassed", b" ", "outclassed"),
-        # The first deck of a session carries a returning pilot's welcome and
-        # recap above its gauges (issue #641), which at forty columns is most of
-        # page one. It is reviewed as itself; the deck a pilot sees for the rest
-        # of the session is reached by leaving a screen and coming back.
-        ("Command Deck, first of a session", b""),
-        ("Command Deck", b"OB"),
-        ("Command Deck, expanded", b"OBX"),
-        ("Commodity Market", b"M"),
-        ("Engineering Yard", b"Y"),
-        # The crew roster is behind the yard, not the deck: `K` from `Y`.
-        ("Crew Roster", b"YK"),
-        ("Mission Board", b"B"),
-        ("Contract Details", b"B1"),
-        ("Navigation Chart", b"C"),
-        ("Pilot Record", b"S", "played"),
-        # The record's other three views, and the finale, are each one more key.
-        ("Pilot Record, jobs", b"SC", "played"),
-        ("Pilot Record, log", b"SH", "played"),
-        ("Career Dossiers", b"SD", "played"),
-        ("Career Finale", b"SR", "played"),
-        # The ending a retirement is shown (issue #644): Status, Finale, Retire,
-        # yes. It needs a career that *may* retire, which is its own fixture.
-        ("Career Complete", b"SRSY", "retiring"),
-        ("Hall of Fame", b"H", "played"),
-        # The Hall's five views are five different tables, not one paged table.
-        ("Hall of Fame, trading", b"H2", "played"),
-        ("Hall of Fame, exploration", b"H3", "played"),
-        ("Hall of Fame, combat", b"H4", "played"),
-        ("Hall of Fame, careers", b"H5", "played"),
-        ("Pilot Guide", b"G"),
-        ("Trading Ledger", b"T"),
-        ("Viewport", b"V"),
-        ("Display Options", b"O"),
-        ("Archive Contacts", b"N"),
-        ("Concord Contacts", b"P"),
-        ("Blackwake Contacts", b"W"),
-        # The chart opens as a list; its own [V] is the spatial map, which is a
-        # different drawing and the one the 40x12 floor was argued over.
-        ("Navigation Chart, map", b"CV"),
-        # The list picker is a screen of its own and had no panel: it is the
-        # one drawing in the game that is neither framed nor full-bleed, and it
-        # used to be printed under whatever opened it (issue #643). Two ways in,
-        # because the played career is the one with more than a row to pick.
-        ("Route planner, destination picker", b"CG", "played"),
-        ("Star map, station picker", b"CVI", "played"),
-    ],
     "war_dialer": [
         # The masthead, drawn before the first screen clears: `^` keeps what a
         # walk would otherwise throw away. Its scanline is the door's only
@@ -323,7 +260,7 @@ WALKS: dict[str, list[tuple[str, bytes]]] = {
 # a fresh world, so the attempt is a certainty rather than a dice roll, and
 # without it every garrison screen was a panel of "No exchanges held" and the
 # switchboard's holdings and income gauges were permanently zero.
-ONBOARDING: dict[str, bytes] = {"voidrunner": b"\rY", "war_dialer": b"\r\r"}
+ONBOARDING = {"war_dialer": b"\r\r"}
 
 # Keys pressed after `seed()` has given the world its company and its past, to
 # put the caller back in the game: dismiss the crackdown receipt the archived
@@ -583,7 +520,6 @@ SHOWS: dict[str, dict[str, str]] = {
 # The presets in which a door plays its launch splash: the rest turn motion off,
 # and with it the splash, so a `~` walk there would photograph nothing.
 SPLASH_PRESETS: dict[str, tuple[str, ...]] = {
-    "voidrunner": ("auto", "basic"),
     # War Dialer can tell an idle terminal from typed-ahead keys only with
     # `select()`, which a Windows pipe does not support, so it plays no splash
     # there -- and a development gallery on Windows has none to photograph.
@@ -594,8 +530,6 @@ SPLASH_PRESETS: dict[str, tuple[str, ...]] = {
 # passed as a flag: Voidrunner keeps its display style in the career (all four of
 # `DISPLAY_STYLES`), War Dialer takes `unicode_style` from the drop file.
 PRESETS: dict[str, dict[str, dict]] = {
-    "voidrunner": {style: {"display_style": style} for style in
-                   ("auto", "fast", "basic", "mono", "plain")},
     # War Dialer splits its presentation in two: `unicode_style` arrives in the
     # drop file, while the caller's own display switches live in the world's
     # `meta` table, which is where Fast mode -- the one deliberately unframed
@@ -651,7 +585,6 @@ class Door:
         self.size = f"{width}x{height}"
         env = dict(os.environ)
         env.update(NETBBS_DOOR_INFO=str(drop_file(state, width, height, info_extra)),
-                   VOIDRUNNER_SAVE_DIR=str(state / "saves"),
                    WAR_DIALER_DB_PATH=str(state / "war-dialer.db"),
                    DOOR_SPLASH="1" if splash else "0",
                    PYTHONIOENCODING="utf-8")
@@ -1001,14 +934,6 @@ def blank_world(door: pathlib.Path, state: pathlib.Path) -> None:
 
 def apply_preset(state: pathlib.Path, extra: dict) -> dict:
     """Put the preset where the door reads it; return what the drop file needs."""
-    style = extra.get("display_style")
-    if style:
-        for save in (state / "saves").glob("*.json"):
-            if save.name.endswith(".previous") or "recovery" in save.name:
-                continue
-            data = json.loads(save.read_text(encoding="utf-8"))
-            data["display_style"] = style
-            save.write_text(json.dumps(data), encoding="utf-8")
     display = extra.get("display")
     if display:
         # Exactly what the door's own display screen writes: one JSON row keyed
@@ -1026,182 +951,19 @@ def apply_preset(state: pathlib.Path, extra: dict) -> dict:
             if key not in ("display_style", "display")}
 
 
-def _screen_rows(running: "Door") -> list[str]:
-    """The page the door is looking at: unstyled, unframed, one row per line.
-
-    Only the last page it drew. A door does not clear between screens, so the
-    whole conversation is still on the wire, and an entry read out of an earlier
-    screen would send the walk somewhere else entirely.
-    """
-    rows = [re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", row).strip()
-            for row in last_screen(running.read()).replace("\r\n", "\n").split("\n")]
-    opened = max((index for index, row in enumerate(rows) if row[:1] in ("\u256d", "+")), default=0)
-    return [row.strip("\u2502\u2551|").strip() for row in rows[opened:]]
 
 
-def _entry_key(rows: list[str], pattern: str, follower: str | None = None) -> str | None:
-    """The `[K]` of the first listed entry matching `pattern`.
-
-    `follower` is matched against the entry's second row, which is where a
-    contract card puts the facts its first row does not have room for.
-    """
-    for index, row in enumerate(rows):
-        match = re.match(r"^\[([0-9A-Z])\]\s+(.*)$", row)
-        if not match or not re.search(pattern, match.group(2)):
-            continue
-        if follower is not None and not re.search(follower, rows[index + 1] if index + 1 < len(rows) else ""):
-            continue
-        return match.group(1)
-    return None
 
 
-def build_voidrunner_outclassed(door_name: str, door: pathlib.Path, state: pathlib.Path) -> None:
-    """The combat fixture, with cargo aboard, against a raider two tiers too strong.
-
-    The fight is played into like the combat fixture's, with a hold bought first so
-    that Dump is on offer. What play cannot arrange is the opponent: an opening
-    board never posts a tier-4 bounty next door, and a tier-4 random contact needs
-    a danger-4 system the opening neighbourhood may not have. So the opponent of
-    the fight the door saved is raised to tier 4 in the save, and nothing else --
-    the hull, the hold, the credits and the ruleset are what play left.
-    """
-    build_voidrunner_combat(door_name, door, state, stock_hold=True)
-    for save in (state / "saves").glob("*.json"):
-        if ".previous" in save.name or "recovery" in save.name:
-            continue
-        data = json.loads(save.read_text(encoding="utf-8"))
-        travel = data.get("pending_travel") or {}
-        combat = (travel.get("encounter") or {}).get("combat")
-        if combat is None:
-            raise SystemExit("the combat fixture did not leave a fight to raise")
-        # The opponent of the saved fight, and only that. The journey's copy of the
-        # bounty has to stay equal to the contract on the books, or the door refuses
-        # the career as inconsistent -- which it did, the first time this was built.
-        combat["pirate"].update(tier=4, hp=80, hp_max=80)
-        save.write_text(json.dumps(data), encoding="utf-8")
 
 
-def build_voidrunner_combat(door_name: str, door: pathlib.Path, state: pathlib.Path, *, stock_hold: bool = False) -> None:
-    """A career left in the middle of a fight, so combat gets a panel too.
-
-    Combat is only reachable through a jump, and a random encounter is a chance
-    roll -- a dozen consecutive hops against the cached career drew none, which
-    is why the screen the old presentation was thinnest on had no picture. The
-    deterministic route is a bounty whose target is the next system along: that
-    forces the fight on arrival rather than rolling for one. The career is left
-    mid-fight, because the door commits the fight before narrating it, so every
-    later launch resumes straight into the combat screen.
-
-    An opening board carries such a bounty about three times in four, so this
-    retries with a fresh career rather than hoping; each attempt is one short
-    subprocess. It reads the door's own screens for the keys it presses -- the
-    board's letters, the offer's Accept page, the chart's destination -- so the
-    save format lives in the door and nowhere else.
-    """
-    for attempt in range(16):
-        remove(state)
-        _onboard(door_name, door, state)
-        running = Door(door, state, 80, 24, {})
-        try:
-            running.settle()
-            if stock_hold:
-                # Market, the first commodity, Purchase, a dozen units, back out.
-                for key in (b"M", b"A", b"P", b"1", b"2", b"\r", b"B"):
-                    running.press(key, expect=False)
-            running.press(b"B")  # the contract board
-            rows = _screen_rows(running)
-            # A bounty card says BOUNTY on its first row and "1 jumps" on its
-            # second; one jump is what makes the fight happen on arrival.
-            key = _entry_key(rows, r"BOUNTY", r"\b1 jumps\b")
-            target = None
-            if key is not None:
-                entry = next(row for row in rows if row.startswith(f"[{key}] "))
-                target = re.sub(r"^\[.\]\s+(?:\S*\s)?", "", entry).split("  ")[0].strip()
-            if not key or not target:
-                running.kill()
-                continue
-            running.press(key.encode())  # the contract's own terms
-            # Accept lives on the page that offers it; the first page says which.
-            for _ in range(8):
-                if "[A] Accept" in " ".join(_screen_rows(running)):
-                    break
-                running.press(b">")
-            running.press(b"A")
-            running.press(b"B")  # back to the board
-            running.press(b"B")  # back to the deck
-            running.press(b"C")  # the chart
-            letter = _entry_key(_screen_rows(running), re.escape(target))
-            if letter is None:
-                running.kill()
-                continue
-            running.press(letter.encode())
-            running.press(b"Y")  # depart; the bounty is waiting on arrival
-            if "Combat" not in " ".join(_screen_rows(running)):
-                running.kill()
-                continue
-        except BaseException:
-            running.kill()
-            raise
-        # Deliberately killed, not closed: the career is meant to stay in the
-        # fight, and a clean exit would be a career that had left one.
-        running.kill()
-        return
-    raise SystemExit("no adjacent bounty appeared on 16 opening boards; "
-                     "the combat fixture could not be built")
 
 
-def build_voidrunner_played(door_name: str, door: pathlib.Path, state: pathlib.Path) -> None:
-    """A career with a fight behind it, for the screens that show a record.
-
-    A brand-new career has no combat victories, one charted system and no
-    trading margin, and `achievement_ranking` filters exactly those -- so the
-    Hall of Fame's four achievement views photographed their empty-state
-    message rather than the tables #493 rebuilt. This takes the combat fixture
-    one step further and finishes the fight, which is the shortest walk the door
-    itself offers to a career with something on its record.
-    """
-    build_voidrunner_combat(door_name, door, state)
-    running = Door(door, state, 80, 24, {})
-    try:
-        running.settle()
-        for _ in range(20):
-            rows = _screen_rows(running)
-            if any("STATION SERVICES" in row for row in rows):
-                break  # the fight is over, one way or the other, and we are docked
-            running.press(b"F" if "[F] Fire" in " ".join(rows) else b"\r", expect=False)
-    except BaseException:
-        running.kill()
-        raise
-    running.kill()  # the career on disk is what the panels copy
 
 
-def build_voidrunner_retiring(door_name: str, door: pathlib.Path, state: pathlib.Path) -> None:
-    """The played career, allowed to retire.
-
-    Every other fixture here is built by playing the door and nothing else, and
-    that stays the rule. This is the one state play cannot reach inside a build:
-    the cheapest ending asks for the top career rank, which is 150,000 credits of
-    trading. So the career is played as far as `played` goes -- a fight, a kill, a
-    record -- and then one field is raised in its save: the rank it has *retained*.
-    Credits, ship, log and everything the ending screen prints are what play left
-    there, which is the point of photographing it.
-    """
-    build_voidrunner_played(door_name, door, state)
-    game = load_door(door)
-    for save in (state / "saves").glob("*.json"):
-        if ".previous" in save.name or "recovery" in save.name or save.parent.name == "scores":
-            continue
-        data = json.loads(save.read_text(encoding="utf-8"))
-        data["pilot"]["highest_rank_seen"] = len(game.RANKS) - 1
-        save.write_text(json.dumps(data), encoding="utf-8")
 
 
-FIXTURE_BUILDERS = {
-    ("voidrunner", "outclassed"): build_voidrunner_outclassed,
-    ("voidrunner", "combat"): build_voidrunner_combat,
-    ("voidrunner", "played"): build_voidrunner_played,
-    ("voidrunner", "retiring"): build_voidrunner_retiring,
-}
+FIXTURE_BUILDERS = {}
 
 
 def _onboard(door_name: str, door: pathlib.Path, state: pathlib.Path) -> None:
@@ -1313,7 +1075,7 @@ def painted(screen: str, width: int, height: int) -> str:
 
 def build(door_name: str, widths: list[int], heights: dict[int, int],
           out_dir: pathlib.Path, fresh: bool) -> pathlib.Path:
-    door = ROOT / "src/netbbs/doors/bundled" / f"{door_name}.py"
+    door = ROOT / "war_dialer.py"
     if not door.exists():
         raise SystemExit(f"no such bundled door: {door}")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1436,7 +1198,7 @@ def build(door_name: str, widths: list[int], heights: dict[int, int],
 </style></head><body>
 <h1>{html.escape(door_name)} — every screen, every size</h1>
 <p>Rendered from the real door in a subprocess, typed at one key at a time and
-painted by <code>scripts/website_ansi_to_html.py</code> on a canvas the size of
+painted by <code>tools/ansi_to_html.py</code> on a canvas the size of
 the terminal, from one cached career so that panels differ only by size and
 preset. Attach this page to any pull request that changes a screen.</p>
 {"".join(sections)}
@@ -1449,7 +1211,6 @@ preset. Attach this page to any pull request that changes a screen.</p>
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("door", choices=sorted(WALKS))
     parser.add_argument("--widths", type=int, nargs="+", default=[80, 64, 40],
                         help="terminal widths to render (the supported floor is 40)")
     parser.add_argument("--out", type=pathlib.Path, default=ROOT / "build" / "gallery")
@@ -1459,7 +1220,7 @@ def main() -> None:
 
     heights = {80: 24, 64: 20, 40: 12}
     out_dir = args.out.expanduser().resolve()
-    target = build(args.door, args.widths, heights, out_dir, args.fresh)
+    target = build("war_dialer", args.widths, heights, out_dir, args.fresh)
     print(f"wrote {target}")
     if args.open:
         webbrowser.open(target.as_uri())

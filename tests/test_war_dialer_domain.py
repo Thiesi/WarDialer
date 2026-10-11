@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 _WAR_DIALER_PATH = (
-    Path(__file__).resolve().parent.parent / "src" / "netbbs" / "doors" / "bundled" / "war_dialer.py"
+    Path(__file__).resolve().parent.parent / "war_dialer.py"
 )
 
 

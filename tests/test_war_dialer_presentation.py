@@ -34,7 +34,7 @@ import pytest
 from pathlib import Path
 
 _WAR_DIALER_PATH = (
-    Path(__file__).resolve().parent.parent / "src" / "netbbs" / "doors" / "bundled" / "war_dialer.py"
+    Path(__file__).resolve().parent.parent / "war_dialer.py"
 )
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -3767,8 +3767,8 @@ def test_the_heat_chip_warns_about_what_a_trade_would_leave(tmp_path, heat, expe
 
 
 def _gallery():
-    """`scripts/door_gallery.py` as a module, for the walks it declares."""
-    path = Path(__file__).resolve().parent.parent / "scripts" / "door_gallery.py"
+    """`tools/door_gallery.py` as a module, for the walks it declares."""
+    path = Path(__file__).resolve().parent.parent / "tools" / "door_gallery.py"
     spec = importlib.util.spec_from_file_location("gallery_under_test", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -4236,14 +4236,12 @@ def test_the_first_screen_a_new_caller_sees_has_a_panel():
     assert "FIRST VISIT" not in UNREACHABLE
 
 
-def test_the_operator_guide_names_the_schema_the_code_writes():
+def test_the_design_names_the_schema_the_code_writes():
     """A guide that names the wrong version makes its own diagnostics wrong."""
     guide = " ".join((Path(__file__).resolve().parent.parent / "docs"
-                      / "NetBBS-door-guide.md").read_text(encoding="utf-8").split())
+                      / "design.md").read_text(encoding="utf-8").split())
     version = wd.WORLD_SCHEMA_VERSION
-    assert f"records schema version {version} in SQLite" in guide
-    assert f"upgrades the world to schema {version} transactionally" in guide
-    assert f"Old binaries refuse schema {version}" in guide
+    assert f"the current version is {version}" in guide
 
 
 def test_a_picker_entry_never_advertises_a_key_its_reader_discards(tmp_path, monkeypatch):

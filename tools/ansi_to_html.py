@@ -1,10 +1,10 @@
-"""Turn raw ANSI captured from a running node into the HTML the website uses.
+"""Turn raw ANSI terminal captures into HTML for the War Dialer gallery.
 
 Reads a capture written by one of the `website_capture_*.py` scripts (or by a
 Telnet client driving a real node) and emits the `<pre class="term-body">`
 body for www.netbbs.org. Run from a checkout:
 
-    PYTHONPATH=src python scripts/website_ansi_to_html.py raw.txt shot.html
+    python tools/ansi_to_html.py raw.txt shot.html
 
 Two things this has to get right, both learned the hard way:
 
