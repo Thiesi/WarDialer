@@ -1,0 +1,5 @@
+# One standalone script; this configures tests, not an installable package.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["timing_sensitive: input timing windows; run serially after the parallel suite"]

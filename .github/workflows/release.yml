@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the asset is byte-identical to the tagged blob
+        run: test "$(git hash-object war_dialer.py)" = "$(git rev-parse "$GITHUB_REF_NAME:war_dialer.py")"
+      - name: Publish the door and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum war_dialer.py > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" war_dialer.py SHA256SUMS \
+            --title "War Dialer $GITHUB_REF_NAME" --generate-notes --verify-tag
