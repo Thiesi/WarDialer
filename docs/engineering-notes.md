@@ -483,11 +483,8 @@ War Dialer maintenance uses a separate rollback-journal SQLite file at
 maintenance retains BEGIN EXCLUSIVE. Do not use WAL for this guard: WAL readers
 do not block an exclusive writer. Never rename/delete this sidecar during world
 restore. Test an idle session and killed subprocess, not only active world writes.
-Snapshots must capture the world before the node DB and verify matching ownership
-against that node snapshot. Normalize the disposable world snapshot to DELETE
-journaling so read-only verification cannot introduce WAL sidecars into an archive.
-Restore each external world and its old WAL/SHM/journal artifacts using a local
-rollback directory; a late failure must restore both node state and world state.
+How a host snapshots and restores worlds around this guard is the host's policy;
+NetBBS's lives in its own worklog.
 
 
 Shared-crew worlds use schema 2 even though the physical columns are unchanged:
