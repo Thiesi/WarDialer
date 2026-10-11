@@ -8,6 +8,13 @@ Legacy host worlds have an owner without the self-owned marker; never infer
 self-ownership just because a launch supplies no host token. The game binds
 or validates ownership before loading a player.
 
+CP437 conversion happens at `out`, after layout. Authored replacements must
+therefore preserve display columns. The source-literal test requires explicit
+forms for new screen glyphs, while the separate arbitrary-name fallback
+preserves wide/combining-character widths. Do not use low CP437 control bytes
+as decorative symbols. NetBBS owns terminal conversion and always receives
+UTF-8, even when a caller saved a CP437 preference outside the host.
+
 Administration lives in `administer_world`, also called by `--admin`.
 Mutations hold the exclusive session guard and record their audit in the same
 transaction. A season close or reset first takes a SQLite backup, including
