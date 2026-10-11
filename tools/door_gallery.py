@@ -521,10 +521,8 @@ SHOWS: dict[str, dict[str, str]] = {
 # The presets in which a door plays its launch splash: the rest turn motion off,
 # and with it the splash, so a `~` walk there would photograph nothing.
 SPLASH_PRESETS: dict[str, tuple[str, ...]] = {
-    # War Dialer can tell an idle terminal from typed-ahead keys only with
-    # `select()`, which a Windows pipe does not support, so it plays no splash
-    # there -- and a development gallery on Windows has none to photograph.
-    "war_dialer": ("auto",) if os.name != "nt" else (),
+    # select on POSIX and PeekNamedPipe on Windows both preserve queued keys.
+    "war_dialer": ("auto",),
 }
 
 # Every preset a caller can choose, applied to the fixture's copy rather than

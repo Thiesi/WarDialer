@@ -72,6 +72,7 @@ import os
 import random
 import re
 import select
+import socket
 import sqlite3
 import sys
 import textwrap
@@ -94,6 +95,7 @@ _OUTPUT_WIDTH = 80
 _CLASSIC_DROP_FILE: str | None = None
 _OUTPUT_ENCODING = "utf-8"
 _DEFAULT_ENCODING = "utf-8"
+_SOCKET_TRANSPORT = None
 DISPLAY_ENCODINGS = {"auto": "Automatic", "utf-8": "UTF-8", "cp437": "CP437"}
 # Single-column substitutes retain authored alignment and avoid CP437's low
 # control-byte symbols, which some terminals would interpret as commands.
@@ -488,13 +490,120 @@ def spark_ramp() -> str:
     return SPARK_ASCII if _ASCII_DECOR else SPARK
 
 
+class _CarrierLost(EOFError):
+    """The inherited socket disconnected; use the ordinary EOF exit path."""
+
+
+class _SocketTransport:
+    """Borrow the host's connection through this process's inherited handle.
+
+    Close only our handle on return, never shutdown the shared connection or
+    change its blocking mode. Telnet negotiation remains the host's job.
+    Filtering keeps constant space even for an unfinished subnegotiation.
+    """
+
+    def __init__(self, handle: int):
+        self.socket = socket.socket(fileno=handle)
+        self.mode = "text"
+        self.lost = False
+        self.after_cr = False
+
+    def waiting(self, timeout: float | None = 0) -> bool:
+        if self.lost:
+            return True
+        import select
+
+        try:
+            return bool(select.select([self.socket], [], [], timeout)[0])
+        except OSError:
+            self.lost = True
+            return True
+
+    def __call__(self, timeout: float | None) -> bytes | None:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for _ in range(4096):
+            if self.lost:
+                return b""
+            remaining = None if deadline is None else max(0, deadline - time.monotonic())
+            if not self.waiting(remaining):
+                return None
+            if self.lost:
+                return b""
+            try:
+                byte = self.socket.recv(1)
+            except BlockingIOError:
+                continue  # the host may have handed us a nonblocking socket
+            except OSError:
+                self.lost = True
+                return b""
+            if not byte:
+                self.lost = True
+                return b""
+            n = byte[0]
+            if self.mode == "option":
+                self.mode = "text"  # WILL/WONT/DO/DONT's option byte
+            elif self.mode == "sub":
+                if n == 255:
+                    self.mode = "sub_iac"
+            elif self.mode == "sub_iac":
+                self.mode = "text" if n == 240 else "sub"
+            elif self.mode == "iac":
+                self.mode = "text"
+                if n == 255:
+                    return self._text_byte(byte)  # IAC IAC is literal data
+                if n in (251, 252, 253, 254):
+                    self.mode = "option"
+                elif n == 250:
+                    self.mode = "sub"
+            elif n == 255:
+                self.mode = "iac"
+            else:
+                data = self._text_byte(byte)
+                if data is not None:
+                    return data
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+        return None  # yield after a bounded run of telnet control traffic
+
+    def _text_byte(self, byte: bytes) -> bytes | None:
+        if self.after_cr:
+            self.after_cr = False
+            if byte in (b"\x00", b"\n"):
+                return None
+        self.after_cr = byte == b"\r"
+        return byte
+
+    def write(self, data: bytes) -> None:
+        if self.lost:
+            raise _CarrierLost("socket closed")
+        import select
+
+        pending = memoryview(data.replace(b"\xff", b"\xff\xff"))
+        try:
+            while pending:
+                select.select([], [self.socket], [])
+                try:
+                    sent = self.socket.send(pending)
+                except BlockingIOError:
+                    continue
+                if not sent:
+                    raise _CarrierLost("socket closed")
+                pending = pending[sent:]
+        except (OSError, _CarrierLost) as exc:
+            self.lost = True
+            raise _CarrierLost("socket closed") from exc
+
+    def close(self) -> None:
+        self.socket.close()
+
+
 def apply_display_encoding(encoding: str) -> None:
     """Select the wire encoding; NetBBS owns its caller-side conversion."""
     global _OUTPUT_ENCODING
     effective = _DEFAULT_ENCODING if encoding == "auto" else encoding
     if os.environ.get("NETBBS_DOOR_INFO") is not None:
         effective = "utf-8"
-    if hasattr(sys.stdout, "reconfigure"):
+    if _SOCKET_TRANSPORT is None and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding=effective)
     _OUTPUT_ENCODING = effective
 
@@ -523,6 +632,9 @@ def out(text: str = "") -> None:
         text = re.sub(r"\x1b\[[0-9;:]*m", "", text)
     if _OUTPUT_ENCODING == "cp437":
         text = _cp437_text(text)
+    if _SOCKET_TRANSPORT is not None:
+        _SOCKET_TRANSPORT.write(text.encode(_OUTPUT_ENCODING))
+        return
     try:
         sys.stdout.write(text)
         sys.stdout.flush()
@@ -573,7 +685,12 @@ def read_key() -> str:
     # via `os.read()` directly instead is unbuffered -- never pulls more
     # than the one byte asked for -- so what `select()` sees on the fd
     # always matches what's actually still unread.
-    data = os.read(sys.stdin.fileno(), 1)
+    if _SOCKET_TRANSPORT is not None:
+        data = _SOCKET_TRANSPORT(None)
+        while data is None:
+            data = _SOCKET_TRANSPORT(None)
+    else:
+        data = os.read(sys.stdin.fileno(), 1)
     if not data:
         raise EOFError("stdin closed")
     return data.decode("ascii", errors="replace")
@@ -620,6 +737,11 @@ def _read_key_with_timeout(timeout: float) -> str | None:
     `os.set_blocking()` is unavailable on Windows."""
     if _PENDING_INPUT:
         return read_key()
+    if _SOCKET_TRANSPORT is not None:
+        data = _SOCKET_TRANSPORT(timeout)
+        if data == b"":
+            raise _CarrierLost("socket closed")
+        return None if data is None else data.decode("ascii", errors="replace")
     fd = sys.stdin.fileno()
     try:
         ready, _, _ = select.select([sys.stdin], [], [], timeout)
@@ -630,38 +752,40 @@ def _read_key_with_timeout(timeout: float) -> str | None:
     return read_key()
 
 
+def _windows_input_waiting(fd: int) -> bool:
+    """Peek without consuming typed-ahead input or changing pipe mode."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel.GetFileType.restype = wintypes.DWORD
+    kernel.PeekNamedPipe.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+    ]
+    kernel.PeekNamedPipe.restype = wintypes.BOOL
+    handle = msvcrt.get_osfhandle(fd)
+    kind = kernel.GetFileType(handle)
+    if kind == 2:
+        return bool(msvcrt.kbhit())
+    if kind != 3:
+        return True  # disk or invalid handle: read/EOF/error does not await a key
+    available = wintypes.DWORD()
+    if not kernel.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None):
+        error = ctypes.get_last_error()
+        if error in (109, 232):
+            raise EOFError("stdin closed")
+        raise ctypes.WinError(error)
+    return bool(available.value)
+
+
 def _poll_read_key_windows(fd: int, timeout: float) -> str | None:
-    """Windows-only fallback for `_read_key_with_timeout` -- see that
-    function's own docstring for why `select()` can't be used here."""
+    """Bounded lookahead on Windows pipes, including Python 3.11."""
     deadline = time.monotonic() + timeout
     if os.name == "nt":
-        import ctypes
-        import msvcrt
-        from ctypes import wintypes
-
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.GetFileType.argtypes = [wintypes.HANDLE]
-        kernel.GetFileType.restype = wintypes.DWORD
-        kernel.PeekNamedPipe.argtypes = [
-            wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
-            ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
-        ]
-        kernel.PeekNamedPipe.restype = wintypes.BOOL
-        handle = msvcrt.get_osfhandle(fd)
-        kind = kernel.GetFileType(handle)
-        while True:
-            if kind == 1 or (kind == 2 and msvcrt.kbhit()):
-                break
-            if kind == 3:
-                available = wintypes.DWORD()
-                if not kernel.PeekNamedPipe(handle, None, 0, None,
-                                             ctypes.byref(available), None):
-                    error = ctypes.get_last_error()
-                    if error in (109, 232):
-                        raise EOFError("stdin closed")
-                    raise ctypes.WinError(error)
-                if available.value:
-                    break
+        while not _windows_input_waiting(fd):
             if time.monotonic() >= deadline:
                 return None
             time.sleep(min(_WINDOWS_POLL_INTERVAL_SECONDS,
@@ -3917,12 +4041,18 @@ def _splash_ready(p: Palette) -> bool:
     """Whether a caller is plainly there, watching, with nothing typed yet."""
     if not motion_enabled(p) or _PENDING_INPUT:
         return False
+    if _SOCKET_TRANSPORT is not None:
+        return not _SOCKET_TRANSPORT.waiting()
     try:
         ready, _, _ = select.select([sys.stdin], [], [], 0)
-    except (OSError, ValueError, TypeError, AttributeError):
-        # Not pollable without reading: a Windows pipe, a test double. A
-        # splash that cannot be skipped without risking a keystroke is no
-        # splash at all.
+    except OSError:
+        if os.name == "nt":
+            try:
+                return not _windows_input_waiting(sys.stdin.fileno())
+            except (EOFError, OSError, ValueError, TypeError, AttributeError):
+                pass
+        return False
+    except (ValueError, TypeError, AttributeError):
         return False
     return not ready  # typed-ahead input, or a closed stdin, belongs to the screens after
 
@@ -5294,7 +5424,14 @@ def _resized_while_idle() -> bool:
     the handler returns. So the wait is a short select and the read that follows
     a False only happens once a byte is there. Scripted input and Windows never
     wait here."""
-    if _PENDING_INPUT or os.name != "posix":
+    if _PENDING_INPUT:
+        return _RESIZE_PENDING
+    if _SOCKET_TRANSPORT is not None:
+        while not _RESIZE_PENDING:
+            if _SOCKET_TRANSPORT.waiting(_RESIZE_POLL_SECONDS):
+                return False
+        return True
+    if os.name != "posix":
         return _RESIZE_PENDING
     try:
         fd = sys.stdin.fileno()
@@ -6461,16 +6598,17 @@ def admin_main(argv=None) -> int:
     return 0
 
 
-def main(argv=None) -> int:
+def _main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--admin" in argv or any(arg.startswith("--admin=") for arg in argv):
         return admin_main(argv)
-    global _OUTPUT_WIDTH, _CLASSIC_DROP_FILE, _DEFAULT_ENCODING
+    global _OUTPUT_WIDTH, _CLASSIC_DROP_FILE, _DEFAULT_ENCODING, _SOCKET_TRANSPORT
     parser = argparse.ArgumentParser(description="War Dialer BBS door")
     parser.add_argument("drop_file", nargs="?", help="DOOR32.SYS or DOOR.SYS filename")
     _CLASSIC_DROP_FILE = parser.parse_args(argv).drop_file
 
-    sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     # Before anything else: the host may signal at any moment after the spawn,
     # and SIGUSR1 ends a process that has not said what to do with it.
     install_resize_handler()
@@ -6480,6 +6618,12 @@ def main(argv=None) -> int:
         sys.stderr.write(f"War Dialer metadata: {_event_plain(str(exc.__cause__))[:300]}\n")
         out_line(str(exc))
         return 1
+    if os.environ.get("NETBBS_DOOR_INFO") is None and info.get("comm_type") == 2:
+        try:
+            _SOCKET_TRANSPORT = _SocketTransport(info["comm_handle"])
+        except OSError as exc:
+            sys.stderr.write(f"War Dialer socket is unavailable: {_event_plain(str(exc))}\n")
+            return 1
     _DEFAULT_ENCODING = info.get("display_encoding", "utf-8") if "drop_file_type" in info else "utf-8"
     apply_display_encoding("auto")
     palette = Palette(truecolor=info.get("color_depth") == "truecolor",
@@ -6646,6 +6790,18 @@ def main(argv=None) -> int:
         except OSError:
             pass
     return 0
+
+
+def main(argv=None) -> int:
+    global _SOCKET_TRANSPORT
+    try:
+        return _main(argv)
+    except (EOFError, BrokenPipeError):
+        return 0
+    finally:
+        if _SOCKET_TRANSPORT is not None:
+            _SOCKET_TRANSPORT.close()
+            _SOCKET_TRANSPORT = None
 
 
 if __name__ == "__main__":

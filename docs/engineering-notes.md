@@ -28,6 +28,17 @@ Windows input lookahead uses `PeekNamedPipe` before an unbuffered read.
 Python 3.11 has no Windows `os.set_blocking`, and Windows `select` accepts
 only sockets. Real-pipe tests cover idle timeout, queued control sequences
 and closed-writer EOF; newer Python alone misses the compatibility failure.
+The same non-consuming peek now enables the splash on idle Windows pipes.
+
+DOOR32 type 2 borrows the inherited socket without changing its blocking
+mode or calling shutdown: closing the door's handle must leave the host's
+connection available when the game returns. Telnet parsing carries its small
+state across timed reads and discards negotiation before the hotkey parser.
+Output is encoded first, then IAC bytes are doubled. Carrier loss follows
+the EOF exit path and releases the world session guard. Actions commit in
+their existing domain transactions before result output; previews do not
+write a partial action on disconnect. Real inherited-socket subprocess tests
+cover a full visit and a carrier drop at an action preview.
 
 Both bundled games require 40x12 and have one layout above it (issue Thiesi/NetBBS#495). The
 second, stripped presentation they carried for terminals down to 20 columns is
