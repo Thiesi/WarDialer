@@ -555,7 +555,7 @@ def _running_door(tmp_path, *, new_player=False, event=False):
         while the raw bytes consumed are still tracked exactly, so a later
         marker in the same chunk is never thrown away.
         """
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + PROC_WAIT
         while True:
             plain, offsets = _plain_with_offsets(pending)
             # Runs of spaces are collapsed on both sides. An action bar is laid
