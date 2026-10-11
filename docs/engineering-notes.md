@@ -2,6 +2,12 @@
 
 Extracted from the NetBBS worklog; issue references belong to NetBBS.
 
+World adoption writes `meta.node_owner` and, for standalone worlds,
+`meta.self_owned=1` together under the existing immediate transaction.
+Legacy host worlds have an owner without the self-owned marker; never infer
+self-ownership just because a launch supplies no host token. The game binds
+or validates ownership before loading a player.
+
 Administration lives in `administer_world`, also called by `--admin`.
 Mutations hold the exclusive session guard and record their audit in the same
 transaction. A season close or reset first takes a SQLite backup, including

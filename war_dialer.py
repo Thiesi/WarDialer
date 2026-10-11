@@ -162,7 +162,7 @@ def _load_door_info() -> dict:
     }
     path = os.environ.get("NETBBS_DOOR_INFO")
     if path is None:
-        return default  # Deliberate standalone demo only.
+        return default
     try:
         with open(path, encoding="utf-8") as f:
             raw = f.read(16385)
@@ -1442,15 +1442,21 @@ def world_session(db_path: Path, *, maintenance: bool = False):
 
 
 def bind_world_owner(conn: sqlite3.Connection, owner: str | None) -> None:
-    """Bind the first host launch to its node's persistent user-ID namespace."""
+    """Adopt an unbound world before loading players; retain its owner thereafter."""
     if owner is not None and (not isinstance(owner, str) or re.fullmatch(r"[0-9a-f]{32}", owner) is None):
         raise WorldStateError("War Dialer host ownership metadata is invalid. Contact the SysOp.")
     with _write_transaction(conn):
         stored = conn.execute("SELECT value FROM meta WHERE key='node_owner'").fetchone()
+        self_owned = conn.execute("SELECT value FROM meta WHERE key='self_owned'").fetchone()
+        if stored is not None and owner is None and self_owned is not None and self_owned[0] == "1":
+            return
         if stored is not None and stored[0] != owner:
             raise WorldStateError("This War Dialer world belongs to another node. Contact the SysOp; no player was loaded.")
-        if stored is None and owner is not None:
-            conn.execute("INSERT INTO meta (key, value) VALUES ('node_owner', ?)", (owner,))
+        if stored is None:
+            conn.execute("INSERT INTO meta (key, value) VALUES ('node_owner', ?)",
+                         (owner if owner is not None else os.urandom(16).hex(),))
+            if owner is None:
+                conn.execute("INSERT INTO meta (key, value) VALUES ('self_owned', '1')")
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

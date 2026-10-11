@@ -1828,6 +1828,41 @@ def test_world_owner_binding_preserves_namespace_across_sessions(db_path):
     conn.close()
 
 
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("owner", [None, "a" * 32])
+def test_world_adoption_and_reopen_preserve_identity(db_path, existing, owner):
+    conn = wd.connect(db_path)
+    if existing:
+        now = wd.now_utc()
+        wd.load_or_create_player(conn, 7, "Returning caller", now, 1)
+    players = [tuple(row) for row in conn.execute("SELECT * FROM players")]
+    wd.bind_world_owner(conn, owner)
+    saved = dict(conn.execute("SELECT key,value FROM meta"))
+    assert len(saved["node_owner"]) == 32
+    int(saved["node_owner"], 16)
+    if owner is None:
+        assert saved["self_owned"] == "1"
+    else:
+        assert saved["node_owner"] == owner and "self_owned" not in saved
+    conn.close()
+
+    conn = wd.connect(db_path)
+    wd.bind_world_owner(conn, owner)
+    assert dict(conn.execute("SELECT key,value FROM meta")) == saved
+    assert [tuple(row) for row in conn.execute("SELECT * FROM players")] == players
+    conn.close()
+
+
+def test_self_owned_adoption_is_atomic(db_path):
+    conn = wd.connect(db_path)
+    conn.execute("CREATE TRIGGER reject_marker BEFORE INSERT ON meta "
+                 "WHEN NEW.key='self_owned' BEGIN SELECT RAISE(ABORT, 'marker failed'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="marker failed"):
+        wd.bind_world_owner(conn, None)
+    assert conn.execute("SELECT key FROM meta WHERE key IN ('node_owner','self_owned')").fetchall() == []
+    conn.close()
+
+
 def test_process_death_releases_world_session_guard(db_path):
     import subprocess
     import os
