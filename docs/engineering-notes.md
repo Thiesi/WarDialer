@@ -11,6 +11,11 @@ rolls back its audit too; its completed snapshot remains for recovery.
 `inspect_world` validates without creating, migrating or settling a world.
 NetBBS retains node-path, ownership and complete-node-backup policy.
 
+Windows input lookahead uses `PeekNamedPipe` before an unbuffered read.
+Python 3.11 has no Windows `os.set_blocking`, and Windows `select` accepts
+only sockets. Real-pipe tests cover idle timeout, queued control sequences
+and closed-writer EOF; newer Python alone misses the compatibility failure.
+
 Both bundled games require 40x12 and have one layout above it (issue Thiesi/NetBBS#495). The
 second, stripped presentation they carried for terminals down to 20 columns is
 what flattened them -- every "make it fit" decision was taken for a caller nobody

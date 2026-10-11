@@ -10,10 +10,9 @@ War Dialer is one Python file, `war_dialer.py`, with no dependencies beyond
 Python 3.11's standard library. It needs a terminal of at least 40 columns by
 12 rows. Every caller on one BBS shares one SQLite world.
 
-This migration is prepared from the NetBBS administration prerequisite
-([NetBBS #1227](https://github.com/Thiesi/NetBBS/issues/1227)). Final acceptance
-of [#1](https://github.com/Thiesi/WarDialer/issues/1) requires that prerequisite
-on NetBBS main and a byte-for-byte comparison at the time of the move.
+The game was extracted byte-for-byte from NetBBS main after its administration
+prerequisite ([NetBBS #1227](https://github.com/Thiesi/NetBBS/issues/1227)).
+See the [migration provenance](docs/migration.md) for the source commit and hash.
 NetBBS still ships its bundled copy. Other-host ownership, classic drop files,
 CP437 output and DOOR32 sockets are follow-up issues #2–#5; this extraction
 does not yet make a host-bound world portable to another BBS.
