@@ -3776,6 +3776,24 @@ def _gallery():
     return module
 
 
+def test_gallery_removes_read_only_capture_directories(tmp_path):
+    import os
+    import stat
+    if os.name != "nt":
+        pytest.skip("Windows directory read-only attribute")
+    capture = tmp_path / "capture"
+    state = capture / "state"
+    state.mkdir(parents=True)
+    (state / "info.json").write_text("{}", encoding="utf-8")
+    state.chmod(stat.S_IREAD | stat.S_IEXEC)
+    try:
+        _gallery().remove(capture)
+        assert not capture.exists()
+    finally:
+        if state.exists():
+            state.chmod(stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+
+
 def _door_screen_titles() -> tuple[set[str], list[int]]:
     """Every title the door writes into a frame heading, from its own source.
 

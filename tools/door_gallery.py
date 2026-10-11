@@ -44,6 +44,7 @@ import pathlib
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -551,8 +552,19 @@ def remove(path: pathlib.Path) -> None:
     outlives its process by a moment, so a single `rmtree(ignore_errors=True)`
     quietly left the world file -- and its directory -- behind on every panel.
     """
+    def writable_retry(operation, failed_path, error):
+        # OneDrive marks directories read-only; copytree carries that attribute
+        # into captures. Windows refuses to remove even an empty such directory.
+        if not isinstance(error[1], PermissionError):
+            raise error[1]
+        os.chmod(failed_path, os.stat(failed_path).st_mode | stat.S_IWUSR)
+        operation(failed_path)
+
     for _ in range(30):
-        shutil.rmtree(path, ignore_errors=True)
+        try:
+            shutil.rmtree(path, onerror=writable_retry)
+        except OSError:
+            pass
         if not path.exists():
             return
         time.sleep(0.1)
