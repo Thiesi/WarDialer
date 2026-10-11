@@ -86,10 +86,13 @@ wd = _load_war_dialer()
 
 
 @pytest.fixture(autouse=True)
-def isolated_output_width(monkeypatch):
-    # main() changes this process-wide boundary, including on an undersized
-    # terminal exit. Each test starts with the normal launch default.
+def isolated_presentation_state(monkeypatch):
+    # main() and Display settings change process-wide rendering boundaries.
+    # Each test starts with the normal launch defaults, regardless of which
+    # earlier tests were assigned to the same xdist worker.
     monkeypatch.setattr(wd, "_OUTPUT_WIDTH", 80)
+    monkeypatch.setattr(wd, "_ASCII_DECOR", False)
+    monkeypatch.setattr(wd, "_MONOCHROME", False)
 
 
 def _buffered_stdin(read_fd: int) -> io.TextIOWrapper:
