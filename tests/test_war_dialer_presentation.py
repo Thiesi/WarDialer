@@ -845,7 +845,7 @@ def test_a_terminal_below_the_floor_is_refused_without_touching_the_world(
         "user_id": 0, "handle": "Guest", "terminal_width": width, "terminal_height": height})
     monkeypatch.setattr(wd, "_resolve_db_path",
                         lambda: pytest.fail("a refused launch opened the world"))
-    assert wd.main() == 0
+    assert wd.main([]) == 0
     raw = _ANSI_RE.sub("", out.getvalue())
     said = " ".join(raw.split())
     assert "needs at least 40 columns by 12 rows" in said or "needs 40x12" in said
@@ -886,7 +886,7 @@ def test_idle_zero_turn_menu_accepts_action_after_refill(tmp_path, monkeypatch):
     monkeypatch.setattr(wd, "read_menu_choice", choose)
     monkeypatch.setattr(wd, "press_any_key", lambda palette: None)
     monkeypatch.setattr(wd, "show_text_pages", lambda *args, **kwargs: "A")
-    assert wd.main() == 0
+    assert wd.main([]) == 0
     conn = wd.connect(path)
     player = wd.read_player(conn, 0)
     assert (player.cash, player.crew, player.turns_used) == (225, 4, 1)
@@ -1065,7 +1065,7 @@ def test_open_session_can_continue_after_season_refresh(tmp_path, monkeypatch):
             clock[0] += wd.SEASON
         return "A"
     monkeypatch.setattr(wd, 'show_text_pages', accept_preview)
-    assert wd.main() == 0
+    assert wd.main([]) == 0
     conn = wd.connect(path)
     player = wd.read_player(conn, 0)
     assert (player.season_number, player.cash, player.crew, player.turns_used) == (2, 225, 4, 1)
@@ -2993,7 +2993,7 @@ def pause_before_result(*args, **kwargs):
     sys.stdin.buffer.read(1)
     return original(*args, **kwargs)
 game.show_action_result = pause_before_result
-sys.exit(game.main())
+sys.exit(game.main([]))
 """
     env = dict(os.environ, WAR_DIALER_DB_PATH=str(path), PYTHONIOENCODING='utf-8')
     env.pop('NETBBS_DOOR_INFO', None)
@@ -4829,7 +4829,7 @@ def test_input_sequence_exit_is_not_reported_as_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(wd, "press_any_key", pasted)
     # Status 0: the door's own sentence is the explanation; nonzero would add
     # the host's "exited unexpectedly" under it.
-    assert wd.main() == 0
+    assert wd.main([]) == 0
     assert "Paste too long. Reconnect and use single keys." in _ANSI_RE.sub("", output.getvalue())
 
 

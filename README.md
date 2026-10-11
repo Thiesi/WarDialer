@@ -13,8 +13,8 @@ Python 3.11's standard library. It needs a terminal of at least 40 columns by
 The game was extracted byte-for-byte from NetBBS main after its administration
 prerequisite ([NetBBS #1227](https://github.com/Thiesi/NetBBS/issues/1227)).
 See the [migration provenance](docs/migration.md) for the source commit and hash.
-NetBBS still ships its bundled copy. Classic drop files, CP437 output and
-DOOR32 sockets are follow-up issues #3–#5.
+NetBBS still ships its bundled copy. CP437 output and DOOR32 socket I/O
+are follow-up issues #4–#5.
 
 ## World and administration
 
@@ -44,6 +44,57 @@ SQLite-consistent snapshot beside the world; `--snapshot` can name a different
 new file. Existing snapshot files are refused. Maintenance stays on afterward.
 Active game sessions prevent maintenance operations. NetBBS additionally
 requires its own verified complete node backup through its wrapper.
+
+## Classic host setup
+
+Pass the caller's drop-file **filename**, quoting paths with spaces:
+
+```sh
+python3 /opt/doors/wardialer/war_dialer.py /path/to/node/DOOR.SYS
+```
+
+DOOR32.SYS and DOOR.SYS accept CRLF or LF and use the numeric caller record
+number, so an alias change preserves the player. Renamed files are recognized
+by their contents. NetBBS's `NETBBS_DOOR_INFO` takes precedence whenever it is
+set. A malformed drop file stops the launch without creating a Guest player.
+Classic ANSI callers get the 16-color palette; standalone branding is neutral.
+This version still outputs UTF-8; CP437 output and socket I/O follow in #4/#5.
+
+Use one absolute `WAR_DIALER_DB_PATH` shared by every node of **one BBS**,
+outside its per-caller temporary directories. Different BBSes need separate
+worlds because their caller numbers overlap. For example, a Unix launcher:
+
+```sh
+#!/bin/sh
+export WAR_DIALER_DB_PATH=/var/lib/wardialer/world.db
+exec /usr/bin/python3 /opt/doors/wardialer/war_dialer.py "$1"
+```
+
+Make the launcher executable and give the BBS account write access to the
+world directory. These setup recipes await the real-host validation in #6:
+
+| Host | Stdio setup |
+| --- | --- |
+| Synchronet on Linux | In SCFG Online Programs, select Native Executable, Standard I/O, DOOR.SYS and drop files in the Node Directory. Command: `/opt/doors/wardialer/launch.sh "%f"`. |
+| Mystic on Linux/macOS | Use the `DD` external-program menu command with `/opt/doors/wardialer/launch.sh "%PDOOR.SYS"`; `%P` includes the trailing slash. |
+| ENiGMA½ | Use its `abracadabra` menu module with the configuration below. |
+
+```hjson
+config: {
+    name: War Dialer
+    dropFileType: DOOR
+    cmd: /usr/bin/python3
+    args: [ "/opt/doors/wardialer/war_dialer.py", "{dropFilePath}" ]
+    io: stdio
+    encoding: utf8
+    env: { WAR_DIALER_DB_PATH: "/var/lib/wardialer/world.db" }
+}
+```
+
+The `--admin` commands above work without a drop file. Host references:
+[Synchronet](https://wiki.synchro.net/ref:door.sys),
+[Mystic external programs](https://wiki.mysticbbs.com/doku.php?id=menu_commands),
+[ENiGMA½ native doors](https://enigma-bbs.github.io/doors/scripts-and-binaries/).
 
 ## Development
 
