@@ -4,6 +4,15 @@ Extracted from NetBBS section 16. Issue references below belong to NetBBS.
 Host world ownership, node backups and legacy path migration remain in the
 [NetBBS design](https://github.com/Thiesi/NetBBS/blob/main/docs/NetBBS-design-doc.md).
 
+## Standalone world ownership (WarDialer #2)
+
+Before loading a player, an unbound world is adopted in one transaction.
+With `war_dialer_owner`, it becomes host-bound. Without that token, it receives
+a random 128-bit owner ID and a self-owned marker. Later standalone launches
+trust the stored ID only when that marker is present. An existing host-bound
+world still requires the matching token on every launch. Adoption preserves
+all existing player rows; each BBS uses its own world shared by its nodes.
+
 ## Issue Thiesi/NetBBS#200 — War Dialer: async multiplayer BBS-crew door game — closed
 
 **Goal:** decide the design for a second door-game genre alongside

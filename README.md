@@ -13,14 +13,17 @@ Python 3.11's standard library. It needs a terminal of at least 40 columns by
 The game was extracted byte-for-byte from NetBBS main after its administration
 prerequisite ([NetBBS #1227](https://github.com/Thiesi/NetBBS/issues/1227)).
 See the [migration provenance](docs/migration.md) for the source commit and hash.
-NetBBS still ships its bundled copy. Other-host ownership, classic drop files,
-CP437 output and DOOR32 sockets are follow-up issues #2–#5; this extraction
-does not yet make a host-bound world portable to another BBS.
+NetBBS still ships its bundled copy. Classic drop files, CP437 output and
+DOOR32 sockets are follow-up issues #3–#5.
 
 ## World and administration
 
 Set `WAR_DIALER_DB_PATH` to an absolute world filename shared by all the nodes
 of one BBS. NetBBS supplies its caller metadata through `NETBBS_DOOR_INFO`.
+Without a host token, the first launch gives the world a random persistent
+owner ID and marks it self-owned. Existing unbound standalone worlds are
+adopted the same way. A NetBBS-bound world still requires its matching host
+token on every launch. Use a separate world for each BBS.
 Keep the world, its WAL files and its `.sessions` guard together; backups must
 use SQLite's backup API, not a copy of a live `.db` file.
 
