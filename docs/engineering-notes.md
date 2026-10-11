@@ -571,8 +571,8 @@ does not duplicate awards or receipts after commit. Separate process contenders
 exercise the same file and writer lock. These complement the bounded skip,
 retention, historical-identity and world-component backup/restore checks; they
 do not substitute for a hands-on restore or a live season-transition exercise.
-Display preferences are a separate per-caller metadata object, with only three
-boolean keys. Cosmetic toggles read the latest object under the write lock and
+Display preferences are a separate per-caller metadata object: three preset
+booleans plus an optional, bounded `encoding` (Automatic, UTF-8 or CP437). Cosmetic toggles read the latest object under the write lock and
 never save the caller's competitive snapshot. Keep ASCII conversion limited to
 authored decorations; never encode whole output with replacement, which loses
 Unicode handles. Strip SGR for monochrome while retaining terminal navigation.
