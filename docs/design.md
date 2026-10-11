@@ -13,6 +13,17 @@ trust the stored ID only when that marker is present. An existing host-bound
 world still requires the matching token on every launch. Adoption preserves
 all existing player rows; each BBS uses its own world shared by its nodes.
 
+## Classic host metadata (WarDialer #3)
+
+A positional DOOR32.SYS or DOOR.SYS filename supplies caller identity, terminal
+height and available communications metadata. NetBBS JSON takes precedence
+when its environment variable is set, including when the file is unreadable.
+Malformed classic metadata refuses the launch before a world is opened;
+multiplayer callers must never silently share a Guest identity. Classic hosts
+default to 16 colors (or monochrome for non-graphics callers). A launch without
+host metadata uses Local branding; NetBBS behavior and its richer palette stay
+unchanged. Parser details follow Voidrunner's classic-host implementation.
+
 ## Issue Thiesi/NetBBS#200 — War Dialer: async multiplayer BBS-crew door game — closed
 
 **Goal:** decide the design for a second door-game genre alongside

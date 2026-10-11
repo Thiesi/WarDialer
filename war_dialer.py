@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-War Dialer -- an asynchronous, play-by-post multiplayer door for NetBBS
-(issue #200; design decision recorded in `docs/NetBBS-design-doc.md`
-Sec.16 "Issue #200"). Rival 80s/90s BBS-scene hacker/phreaker crews
+War Dialer -- an asynchronous, play-by-post multiplayer BBS door
+(originally NetBBS issue #200; design recorded in `docs/design.md`).
+Rival 80s/90s BBS-scene hacker/phreaker crews
 fight over ten shared phone exchanges. Unlike Voidrunner (one save, one
 player, no shared state), this door's whole point is a persistent world
 shared by every caller who plays it -- but it stays inside the same
@@ -14,9 +14,9 @@ actions instantly against shared persistent storage, and the *target*
 of an action -- who is very often not online at that moment -- finds
 out via a summary the next time they themselves log in.
 
-Same v1 door contract as `retro_trivia.py`/`voidrunner.py`: reads the
-drop-file NetBBS hands it via `NETBBS_DOOR_INFO` for handle/user_id/
-color depth, then owns raw stdin/stdout for the whole session (single
+Reads NetBBS's `NETBBS_DOOR_INFO` JSON or a positional DOOR32.SYS/DOOR.SYS
+filename for caller identity and terminal metadata, then owns raw
+stdin/stdout for the whole session (single
 keystroke reads only -- no typed input anywhere in this door, by
 design, to keep entry friction low). Runnable completely standalone
 outside NetBBS too. Zero external dependencies -- stdlib only.
@@ -91,6 +91,7 @@ DIM = f"{ESC}[2m"
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-2]|\x1b[78HDM]")
 _OUTPUT_WIDTH = 80
+_CLASSIC_DROP_FILE: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +151,82 @@ def counted(number: int, noun: str) -> str:
     return f"{number} {noun}{'' if number == 1 else 's'}"
 
 
-def _load_door_info() -> dict:
+def _classic_door_info(path: Path) -> dict:
+    """Read the 11-line DOOR32 or 31/52-line DOOR.SYS format atomically.
+
+    Never accept a partial identity: a caller's record number, not their alias,
+    owns the save. Legacy hosts write CP437; UTF-8 drop files also occur.
+    """
+    raw = path.read_bytes()
+    if len(raw) > 16384:
+        raise ValueError("drop file exceeds 16 KiB")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("cp437")
+    lines = [line.strip() for line in text.splitlines()]
+
+    def number(line: int, minimum: int = 0) -> int:
+        value = lines[line - 1]
+        if not value.isascii() or not value.isdecimal() or int(value) < minimum:
+            raise ValueError(f"invalid number on line {line}")
+        return int(value)
+
+    def name(line: int) -> str:
+        value = lines[line - 1]
+        if not value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError(f"invalid name on line {line}")
+        return value
+
+    kind = path.name.upper()
+    if kind not in ("DOOR32.SYS", "DOOR.SYS"):
+        if lines and re.fullmatch(r"COM\d+:", lines[0], re.IGNORECASE):
+            kind = "DOOR.SYS"
+        elif len(lines) == 11 and lines[0] in ("0", "1", "2"):
+            kind = "DOOR32.SYS"
+        else:
+            raise ValueError("unrecognized drop-file format")
+    if kind == "DOOR32.SYS":
+        if len(lines) < 11:
+            raise ValueError("DOOR32.SYS needs 11 lines")
+        comm_type = number(1)
+        emulation = number(10)
+        if comm_type not in (0, 1, 2) or emulation not in (0, 1, 2, 3, 4):
+            raise ValueError("invalid DOOR32 communications type or emulation")
+        number(3)  # baud rate (zero is valid for a local launch)
+        number(8)  # security level
+        number(11, 1)  # node number
+        info = {
+            "drop_file_type": kind, "user_id": number(5, 1),
+            "handle": name(7) if lines[6] else name(6),
+            "node_name": name(4) if lines[3] else "Local",
+            "terminal_height": 24, "emulation": emulation,
+            "minutes_left": number(9), "comm_type": comm_type,
+            "comm_handle": number(2),
+        }
+        graphics = emulation != 0
+    else:
+        if len(lines) < 31:
+            raise ValueError("DOOR.SYS needs at least 31 lines")
+        if not re.fullmatch(r"COM\d+:", lines[0], re.IGNORECASE):
+            raise ValueError("invalid DOOR.SYS communications port")
+        emulation = lines[19].upper()
+        if emulation not in ("GR", "NG", "7E"):
+            raise ValueError("invalid DOOR.SYS graphics mode")
+        info = {
+            "drop_file_type": kind, "user_id": number(26, 1),
+            "handle": name(36) if len(lines) >= 36 and lines[35] else name(10),
+            "terminal_height": number(21, 1), "emulation": emulation,
+            "minutes_left": number(19), "comm_port": lines[0],
+        }
+        graphics = emulation == "GR"
+    info.update(terminal_width=80, color_depth="16" if graphics else "none",
+                display_style="basic" if graphics else "plain", display_encoding="cp437")
+    return info
+
+
+def _load_door_info(drop_file: str | None = None) -> dict:
+    path = os.environ.get("NETBBS_DOOR_INFO")
     default = {
         "handle": "Guest",
         "user_id": 0,
@@ -158,10 +234,15 @@ def _load_door_info() -> dict:
         "terminal_height": 24,
         "color_depth": "256",
         "unicode_style": True,
-        "node_name": "NetBBS",
+        "node_name": "NetBBS" if path is not None else "Local",
     }
-    path = os.environ.get("NETBBS_DOOR_INFO")
     if path is None:
+        drop_file = drop_file if drop_file is not None else _CLASSIC_DROP_FILE
+        if drop_file is not None:
+            try:
+                default.update(_classic_door_info(Path(drop_file)))
+            except (OSError, ValueError) as exc:
+                raise WorldStateError("War Dialer drop file is invalid. Contact the SysOp; no player was loaded.") from exc
         return default
     try:
         with open(path, encoding="utf-8") as f:
@@ -234,16 +315,24 @@ class Palette:
         "grey": ((0x8A, 0x8F, 0xC4), 103),
     }
 
-    def __init__(self, truecolor: bool):
+    BASIC = {82: 92, 65: 32, 121: 97, 214: 93, 81: 96, 199: 95,
+             203: 91, 195: 37, 103: 90}
+
+    def __init__(self, truecolor: bool, color_depth: str | None = None):
         self._truecolor = truecolor
+        self.color_depth = color_depth
+        self.default_monochrome = color_depth == "none"
         self.ascii_art = False
         self.default_ascii = False
         self.monochrome = False
         self.fast = False
 
     def _sgr(self, rgb: tuple[int, int, int], idx256: int) -> str:
-        if self.monochrome:
+        if self.monochrome or self.color_depth == "none":
             return ""
+        if self.color_depth == "16":
+            # Named roles have authored fallbacks; animation ramps stay green.
+            return f"{ESC}[{self.BASIC.get(idx256, 92 if max(rgb) >= 180 else 32)}m"
         if self._truecolor:
             r, g, b = rgb
             return f"{ESC}[38;2;{r};{g};{b}m"
@@ -4618,7 +4707,7 @@ def read_display(conn: sqlite3.Connection, user_id: int) -> dict[str, bool]:
 def apply_display(p: Palette, values: dict[str, bool]) -> None:
     global _ASCII_DECOR, _MONOCHROME
     for key in DISPLAY_KEYS:
-        setattr(p, key, values.get(key, p.default_ascii if key == 'ascii_art' else False))
+        setattr(p, key, values.get(key, p.default_ascii if key == 'ascii_art' else p.default_monochrome if key == 'monochrome' else False))
     _ASCII_DECOR, _MONOCHROME = p.ascii_art, p.monochrome
 
 
@@ -4648,7 +4737,7 @@ def do_display(p: Palette, conn: sqlite3.Connection, user_id: int, width: int, h
         key = DISPLAY_KEYS[int(choice) - 1]
         with _write_transaction(conn):
             values = read_display(conn, user_id)
-            values[key] = not values.get(key, p.default_ascii if key == 'ascii_art' else False)
+            values[key] = not values.get(key, p.default_ascii if key == 'ascii_art' else p.default_monochrome if key == 'monochrome' else False)
             conn.execute("INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                          (f'display:{user_id}', json.dumps(values)))
         apply_display(p, values)
@@ -6314,10 +6403,14 @@ def admin_main(argv=None) -> int:
     return 0
 
 
-def main() -> int:
-    if "--admin" in sys.argv[1:] or any(arg.startswith("--admin=") for arg in sys.argv[1:]):
-        return admin_main()
-    global _OUTPUT_WIDTH
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if "--admin" in argv or any(arg.startswith("--admin=") for arg in argv):
+        return admin_main(argv)
+    global _OUTPUT_WIDTH, _CLASSIC_DROP_FILE
+    parser = argparse.ArgumentParser(description="War Dialer BBS door")
+    parser.add_argument("drop_file", nargs="?", help="DOOR32.SYS or DOOR.SYS filename")
+    _CLASSIC_DROP_FILE = parser.parse_args(argv).drop_file
 
     sys.stdout.reconfigure(encoding="utf-8")
     # Before anything else: the host may signal at any moment after the spawn,
@@ -6329,8 +6422,9 @@ def main() -> int:
         sys.stderr.write(f"War Dialer metadata: {_event_plain(str(exc.__cause__))[:300]}\n")
         out_line(str(exc))
         return 1
-    palette = Palette(truecolor=info.get("color_depth") == "truecolor")
-    palette.default_ascii = info.get("unicode_style", True) is False
+    palette = Palette(truecolor=info.get("color_depth") == "truecolor",
+                      color_depth=info.get("color_depth"))
+    palette.default_ascii = info.get("unicode_style", True) is False or info.get("color_depth") == "none"
     # Node-wide, per the drop-file contract: NetBBS has no per-caller timezone.
     apply_timezone(info.get("timezone"))
     _OUTPUT_WIDTH, height = terminal_size(info)
