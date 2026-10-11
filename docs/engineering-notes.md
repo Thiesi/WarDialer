@@ -344,3 +344,261 @@ fixture happened to offer exactly two transfers -- after which the walk would
 have published a garrison preview under the service's caption. The `$` suffix
 pages to the last page and presses the last key offered there, which is what the
 door actually guarantees about that entry.
+
+## Shared-world domain and storage
+
+Moved from the NetBBS worklog with Thiesi/NetBBS#1228; issue numbers refer to
+NetBBS.
+
+War Dialer session players are display snapshots. The action transaction must
+load the actor as well as the victim/exchange, and include the turn cost before
+commit. Reloading only the victim does not protect it from its own stale session
+or from a stale attacker. Copy the committed actor back to the session only
+after commit; there is no save-on-quit/disconnect path. Login settlement and
+income timestamps must share the player-credit transaction too.
+
+A zero-turn allowance uses an empty turn_day_start until the first action commits.
+Preserve nonzero legacy anchors. heat_updated_at doubles as a per-player clock
+high-water mark; settle before applying Heat and use the effective time for
+capture/event timestamps too. Screen refresh must call refresh_player, while
+read_player remains an unsettled storage read for transaction/observer use.
+A menu's displayed allowance is a snapshot: still accept action keys after an
+idle zero-turn screen so the transaction can recognize a refill.
+
+An exchange can carry a later clock than the actor after a server clock correction.
+Settle the actor through that exchange time before applying capture Heat and use
+the actor's final timestamp for a new allowance anchor. Login/action season checks
+must respect the persisted world season, not just recompute from a regressed
+wall clock.
+
+World rollover uses the action/read transaction's write lock. Reset all older
+players and exchanges before writing active_season in meta; archive snapshots
+must eventually precede those resets under the same lock. Preserve existing
+current-season rows when adopting a mixed legacy world. Resource/board/rival
+reads trigger settlement, while read_player and list_exchanges stay raw storage
+reads for transaction orchestration and independent observers. An old snapshot
+cannot authorize a new-season action. If that action rejects, its rollover is
+rolled back with it; the next ordinary refresh commits and announces the reset.
+
+Income uses integer rate-times-elapsed-microsecond units, with 3,600,000,000
+units per dollar. Persist the remainder on the player, not an exchange whose
+owner can change. On successful capture, settle the previous owner while the
+database still records their ownership, then save that player, transfer the
+exchange, and save the actor under one transaction. Collection timestamps never
+move backwards. Exchange selection compares ownership, defense and displayed
+stakes, excluding the collection timestamp so harmless collection does not
+reject a caller's choice. Additive schema initialization is transactional too.
+
+Initialization counts exchanges after obtaining the write lock. The regression
+synchronizes two connections immediately before BEGIN, so moving the count
+outside the transaction deterministically reproduces double seeding. Preserve
+unexpected existing counts for manual repair instead of deleting duplicate
+rows with potentially independent owners.
+
+Input tests must include real standalone processes and real buffered stdin
+wrappers: readiness checks cannot see bytes prefetched into Python's buffer.
+Use bounded unbuffered reads. Stream test input larger than the OS pipe capacity
+concurrently with its reader. Web scripted tests must send each War Dialer key
+at its displayed screen; prequeuing a command string now exercises paste rejection
+instead of normal navigation.
+
+Event retention is per target, latest 500 committed IDs, including unread rows.
+Insert and pruning share the action transaction; legacy pruning shares schema
+initialization. History uses an ID cursor rather than offsets. A page carries an
+acknowledgement ID only on an event's final wrapped line: partial records and
+new arrivals must remain unread. Scope acknowledgements by both player and ID,
+and commit a whole page together before advancing. Use display-column wrapping
+for event text before styling, and reserve footer rows in the terminal height.
+
+The switchboard reads player resources, owned exchanges and unread counts under
+one settlement transaction. Paging refreshes that snapshot but never performs a
+login reset or event acknowledgement. Full-screen redraws require an explicit
+result/diagnostic acknowledgement; keep that input boundary in real-process tests.
+
+Standings use the same lifetime-counter formula as rank_score, with stable account
+IDs breaking ties; keep the SQL expression and domain formula aligned. Directory
+reads settle the whole season before sorting/filtering, bound the fetched batch,
+and expose the caller's global position independently of that batch. Two levels
+of pagination (wrapped rows and database batches) must allow both directions
+without skipping the preceding batch's last page.
+
+Preview conflict checks compare the stored actor before elapsed settlement;
+ordinary Heat decay must not invalidate every confirmation. Target checks remain
+inside the same action transaction. Capture action-resource baselines after income
+collection and publish deltas only after commit, so income is not called a payout
+and failed commits never expose an apparent result. Preview rendering must not
+consume RNG draws; all outcome rolls happen only on Act. Contract and approach
+selection use a fixed bounded catalog, so no persistent offer cache is needed.
+Preview and resolution share the same validated terms. Cautious prevents ordinary
+failure crew loss, not a subsequent Heat bust; show and test these separately.
+Drive both pickers in real-process preview/disconnect tests so they still reach
+the final Act boundary after adding the contract board.
+
+Crew specialty/support slots belong in actor preview conflict checks and atomic
+player persistence. Calculate effective action Heat in the same pure helper for
+preview and resolution, but consume support only inside the action transaction.
+Zero added Heat still rolls a bust against existing Heat. A Cash Stash changes
+only bust cash loss and survives ordinary failures; Burner Kit consumption is
+bound to a committed job/raid/root attempt. Purchase rejection retains the draft
+selection. Upgrade fixtures must remove later columns when reconstructing an old
+schema, so tests exercise real shipped layouts rather than impossible hybrids.
+
+Operation progress belongs in the actor preview conflict token. Case/Prepare
+must not draw RNG; Execute consumes preparation, effects and its turn atomically.
+Keep operation success Rank separate from ordinary job counts and align SQL
+standings. Recon settles target income and commits its private snapshot with the
+actor's turn; rollback must restore both. Re-observation replaces a rival's row
+before applying the per-viewer ten-record cap, including equal timestamp ties.
+Read snapshots through viewer, season and strict expiry filters; never substitute
+live rival resources when rendering an earned dossier or raid preview.
+
+Target selection binds digit keys only to complete visible entries. Keep those
+keys separate from Back/Next/Prev and carry database-batch direction through local
+row pagination. Regression coverage must drive the composed picker beyond fifty
+crews, not only call the page reader. Action result pagination owns its pause;
+the main loop must not append a second acknowledgement or clear it prematurely.
+
+
+War Dialer schema adoption uses `PRAGMA user_version` in the same immediate
+transaction as the numbered migration. Pin each shipped migration's layout;
+future model fields must not silently redefine an older version. Check the
+version, required table/column layout and SQLite integrity before switching
+journal mode. Tests that reconstruct an unversioned fixture must set version zero;
+missing columns in a versioned database are damage, not an upgrade request.
+Exercise rollback by denying the version-marker write after schema changes.
+Publish new worlds from a complete same-directory SQLite staging file using an
+atomic no-replace hard link. Existing empty files are recovery input; treating
+one as new would silently reset a truncated world. Keep a simultaneous initial
+connect regression, because a check-then-create sequence exposes an empty file.
+The world filesystem must support hard links (the normal NetBSD/NTFS paths do).
+
+War Dialer's Windows input lookahead uses `PeekNamedPipe` before an unbuffered
+read. Python 3.11 has no Windows `os.set_blocking`, and Windows `select` accepts
+only sockets. Keep this path covered by real pipes, including idle timeout,
+queued control sequences and closed-writer EOF; newer Python alone misses the
+minimum-version compatibility failure.
+
+War Dialer maintenance uses a separate rollback-journal SQLite file at
+`<world>.sessions`. Play retains a read transaction for the complete process;
+maintenance retains BEGIN EXCLUSIVE. Do not use WAL for this guard: WAL readers
+do not block an exclusive writer. Never rename/delete this sidecar during world
+restore. Test an idle session and killed subprocess, not only active world writes.
+Snapshots must capture the world before the node DB and verify matching ownership
+against that node snapshot. Normalize the disposable world snapshot to DELETE
+journaling so read-only verification cannot introduce WAL sidecars into an archive.
+Restore each external world and its old WAL/SHM/journal artifacts using a local
+rollback directory; a late failure must restore both node state and world state.
+
+
+Shared-crew worlds use schema 2 even though the physical columns are unchanged:
+version 1 `players.crew` was the whole real crew, whereas version 2 stores available
+members and adds assigned garrisons to obtain the total. Keep v1 migration code
+immutable. Conversion, income settlement, released holdings, receipts and version
+marker must roll back together. Validate host ownership before this conversion.
+Capture must return the previous garrison exactly once under the same action lock;
+otherwise a stale session can lose or duplicate defenders. Action deltas report
+available and assigned changes separately so reinforcement is not narrated as death.
+Version 2 abandonment markers remain compatible migration data; schema 3 uses
+the player capture ledger for the stronger once-per-season award rule.
+
+Raid recovery is target-wide: persist its deadline in the same transaction as
+any committed attempt, losses, receipt and turn. Login and acknowledgement must
+not clear it. Real SQLite concurrency tests must show exactly one accepted
+attempt when distinct attackers race one unshielded target. The last-attacker
+identity is historical data, not the eligibility key; an old marker migrates to
+one day of recovery because its original attempt time is unavailable.
+
+Economy schema 3 keeps an explicit bounded list of rewarded exchange IDs per
+player: aggregate capture counts or the latest 500 receipts cannot reconstruct
+all previous ownership. Legacy captures retain their old Rank through a season
+credit and exhaust capture awards until rollover. Do not infer missing history
+as evidence that an exchange was never captured.
+
+Control Rank uses the same integer microsecond boundary as cash settlement, with
+a separate per-player remainder. Transfer/withdrawal must save both before
+changing ownership; standings settle the at-most-ten owners, including absent
+ones, before SQL ordering. Keep SQL Rank aligned with Python. Migration pays old
+stored rates before replacing them and awards no control Rank for pre-upgrade
+time. Schema 1 and 2 migrations remain immutable; their shared helpers must still
+work before schema 3 columns exist.
+
+Exchange security is derived defense, never a stored crew assignment. Use the
+same effective defense in previews and capture resolution; return only real
+stationed defenders on transfer. Neighbor ownership affects price without changing
+the target row: re-read the ring under the action lock and compare the selected
+discount separately from target identity. Owner services use the same action lock
+and fresh ownership check. Schema 7 preserves the ten exchange IDs/order and their
+stored rates; roles survive competition reset. Do not edit older migrations or
+require role columns in helpers used before version 7 exists.
+
+Neutral occupancy is separate from `controller_user_id`; a null human owner is
+not sufficient to infer guaranteed capture. Use `exchange_occupied` for contest
+odds and `exchange_owner` for presentation. NPC garrisons never feed player income,
+Rank, standings or released-defender credit. Capture clears neutral occupancy and
+its return deadline atomically; last-defender withdrawal starts the 24-hour return.
+World settlement checks only the three fixed homes and never overwrites human
+ownership. Schema 8 helpers must not run before its columns exist; legacy upgrade
+fixtures must remove those columns when reconstructing older layouts. Exercise
+restart, simultaneous returns and a return between preview and Act with real SQLite.
+
+Public scene history is an allowlist of three territory events, not a copy of
+private receipts. Capture, abandonment and neutral stationing publish and prune
+inside their mutation transaction; a failed bulletin write must roll back the
+underlying action. Keep at most 500 rows, order by committed ID, bound stored
+names/text and sanitize before display. Do not backfill fictional activity on
+upgrade. Ordinary rollover retains the bounded, season-labeled history; explicit
+competition reset clears it after world settlement. Insignia are noncompetitive
+identity: fresh actor reads and season/reset saves must retain them, including
+when another session changes the cosmetic choice during an action preview.
+
+Archive final territory Rank before resetting the world, using the season cutoff
+rather than a late visitor's current time. Do not call a public refresh helper
+from the archiver: it would recurse into rollover. Settle existing owners directly,
+then snapshot all season players with the same Rank expression and account-ID tie
+rule used by live standings. NPCs have no player row and cannot receive medals.
+Archive, income settlement, reset and active marker share one transaction. Keep
+at most twelve headers and their result rows; skip replay of unretained inactive
+seasons after long absences. Snapshot handles/insignia rather than joining live
+identity fields when rendering old results. SysOp advance/reset settles overdue
+natural seasons before changing the anchor, then closes the current season at
+the confirmed operator boundary. Moving the anchor first changes past cutoffs
+and permanently miscounts territory Rank in a quiet world.
+Private finale receipts share the archive/reset transaction and ordinary receipt
+retention/acknowledgement rules. A receipt write failure must roll back final
+earnings and archives too; otherwise a returning dormant caller can lose their
+only private explanation of the reset. Recognition views read archive snapshots,
+never recompute awards or mutate receipt acknowledgement state.
+For rollover recovery, abrupt child-process exit after archive insertion proves
+SQLite rollback before commit; exit just after settlement proves a fresh process
+does not duplicate awards or receipts after commit. Separate process contenders
+exercise the same file and writer lock. These complement the bounded skip,
+retention, historical-identity and world-component backup/restore checks; they
+do not substitute for a hands-on restore or a live season-transition exercise.
+Display preferences are a separate per-caller metadata object, with only three
+boolean keys. Cosmetic toggles read the latest object under the write lock and
+never save the caller's competitive snapshot. Keep ASCII conversion limited to
+authored decorations; never encode whole output with replacement, which loses
+Unicode handles. Strip SGR for monochrome while retaining terminal navigation.
+On Windows, writing to a closed anonymous output pipe can raise `OSError(22)`
+instead of `BrokenPipeError`. Normalize failures at the output writer, so they
+take the disconnect path instead of the storage-error path. Redirect the dead
+stdout descriptor to the null device before Python's final flush. Real-pipe
+tests must cover loss before any action and after commit but before its result;
+the latter must retain the paid action with no duplicate spend or traceback.
+
+`python scripts/war_dialer_balance.py` runs bounded deterministic policy probes
+against disposable SQLite worlds through the actual action resolvers. The default
+is fourteen days and seeds 362/363/364; use `--scenario NAME`, `--days 1..21`, and
+`--seeds ...` to reproduce a smaller comparison. JSON records the game source hash,
+policy, daily resources/Rank/holdings, actions and rejected attempts. Never point
+these probes at a live world. Daily observations settle a database copy: collecting
+income or logging absent players in for reporting would change the experiment.
+
+Fixed caller order deliberately exposes first-mover effects; these policies are
+neither optimal strategies nor a population model. Burst/spaced probes take the
+same first exchange and trade thereafter, isolating low-Heat collection cadence.
+Repeated-victim probes start with mature accounts and alternate attackers against
+an absent target. Bust recovery uses an explicitly depleted fixture and an actual
+forced bust; its recovery counter excludes that bust turn. Finite seeds and these
+fixtures identify incentives and recovery paths, not fairness or fun. Agree balance
+targets and retain separate human playtests before calling a tuned economy balanced.
