@@ -599,3 +599,18 @@ an absent target. Bust recovery uses an explicitly depleted fixture and an actua
 forced bust; its recovery counter excludes that bust turn. Finite seeds and these
 fixtures identify incentives and recovery paths, not fairness or fun. Agree balance
 targets and retain separate human playtests before calling a tuned economy balanced.
+
+**Scenes are composed whole, then sent as cell deltas.** `_Stage` keeps a grid
+of (character, style) cells and `snap()` sends only the runs that changed.
+Short unchanged gaps are absorbed into a run, and a space joins whichever
+segment precedes it. A space must not take the style of its own cell: that
+cell's style is empty, so taking it uncolors the whole preceding phrase. The
+scene tests now assert that every visible character carries a style. A frame
+with nothing new rewrites one cell, so a caption's hold is never silent. A
+driver that waits for output to settle would otherwise type into the hold, and
+the scene would consume that keystroke as its skip. A wide character takes two
+cells, and the second holds an empty placeholder. Overwriting either half
+blanks the other, and a run never starts on a placeholder. The cracktro's
+scroller moves one cell per character, so its handles are NFKC-folded to
+narrow text first. Wire size is bounded per scene at 80x24 truecolor (60 KB).
+The starfield costs most, because each star is a cursor move of its own.

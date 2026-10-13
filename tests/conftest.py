@@ -1,10 +1,11 @@
-"""Keep subprocess visits deterministic; splash tests explicitly opt back in."""
+"""Keep subprocess visits deterministic; splash and scene tests explicitly opt back in."""
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def no_door_splash(monkeypatch):
     monkeypatch.setenv("DOOR_SPLASH", "0")
+    monkeypatch.setenv("DOOR_SCENES", "0")
 
 
 def pytest_collection_modifyitems(config, items):
