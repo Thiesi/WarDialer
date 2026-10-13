@@ -55,8 +55,11 @@ commit they show, and each ends on a caption that the result screen repeats.
 
 Trade Warez, recruiting, garrison and crew purchases keep the carrier sweep;
 Trade is the most frequent action, and the rest are bookkeeping. A scene
-replaces the sweep whenever it plays. Any key ends the scene and the rest of
-its chain, and the key is not handed to the screen behind. Login scenes key off
+replaces the sweep whenever it plays. Each scene holds its caption for about
+three seconds, and the hint changes from "any key skips" to "key continues".
+A key during the motion ends the scene and the rest of its chain. A key during
+the hold ends only that hold, so a promotion still follows its bust. The key is
+never handed to the screen behind. Login scenes key off
 unseen receipts: once the log marks them read, they do not replay. A season
 change seen mid-session may replay its crackdown at the next login, because its
 receipt is still unread. `DOOR_SCENES=0` turns scenes off independently of
