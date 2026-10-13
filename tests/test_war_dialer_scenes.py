@@ -105,8 +105,9 @@ def test_every_write_stays_inside_the_terminal(name, width, height, depth):
 @pytest.mark.parametrize("name", sorted(SCENES))
 def test_it_is_brief_never_quiet_and_small_on_the_wire(name):
     frames = SCENES[name](_palette(), 80, 24, seed=3)
-    seconds = len(frames) * wd.SCENE_FRAME_SECONDS
-    assert 1.2 <= seconds <= 4.0, (name, seconds)
+    moving = (len(frames) - wd.SCENE_HOLD_FRAMES) * wd.SCENE_FRAME_SECONDS
+    assert 0.4 <= moving <= 3.2, (name, moving)
+    assert 2.5 <= wd.SCENE_HOLD_FRAMES * wd.SCENE_FRAME_SECONDS <= 4.0  # long enough to read
     assert all(frames[1:]), "a frame without a write reads as a screen waiting on a key"
     wire = wd.splash_bytes(frames)
     assert sum(len(text.encode()) for text in wire) < 60_000
@@ -176,6 +177,27 @@ def test_any_key_ends_it_and_the_rest_of_the_chain(monkeypatch):
     assert wd.play_scenes(_palette(), 80, 24, [lambda: composed.append("a") or _compose(),
                                                lambda: composed.append("b") or _compose()]) is True
     assert composed == ["a"] and len(written) == 1 + 2 + 1
+
+
+def test_its_caption_holds_long_enough_to_read_and_says_a_key_continues():
+    frames = _compose()
+    hold = wd.SCENE_HOLD_FRAMES
+    assert wd.SCENE_HINT in _picture(frames[:-hold], 80, 24)
+    held = _picture(frames, 80, 24)
+    assert wd.SCENE_HOLD_HINT in held and wd.SCENE_HINT not in held
+    assert len(wd.SCENE_HOLD_HINT) == len(wd.SCENE_HINT)
+
+
+def test_a_key_during_the_hold_ends_only_that_hold(monkeypatch):
+    written = _idle(monkeypatch)
+    moving = len(_compose()) - wd.SCENE_HOLD_FRAMES
+    calls = []
+    monkeypatch.setattr(wd, "_beat", lambda s, *, hand_back=True: calls.append(1) or len(calls) == moving + 1)
+    composed = []
+    assert wd.play_scenes(_palette(), 80, 24, [lambda: composed.append("a") or _compose(),
+                                               lambda: composed.append("b") or _compose()]) is True
+    assert composed == ["a", "b"]
+    assert len(written) == (1 + moving + 1 + 1) + (1 + len(_compose()) + 1)
 
 
 def test_switched_off_waiting_input_and_motionless_presets_play_nothing(monkeypatch):
