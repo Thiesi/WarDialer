@@ -35,6 +35,33 @@ default to 16 colors (or monochrome for non-graphics callers). A launch without
 host metadata uses Local branding; NetBBS behavior and its richer palette stay
 unchanged. Parser details follow Voidrunner's classic-host implementation.
 
+## Mid-game scenes
+
+Following Voidrunner's scenes and Retro Trivia's finales, nine short scenes
+reuse the launch splash's stage and its motion rules. They play only after the
+commit they show, and each ends on a caption that the result screen repeats.
+
+| Scene | When it plays |
+|---|---|
+| Patch In | A Root the Exchange is won or held; an unclaimed exchange gets the short version |
+| Raid | A raid scores or bounces |
+| Contract hack | A job; the contract sets the login banner and the payoff |
+| Operation | The Execute step only; case and prepare get no scene |
+| Busted | A bust, replacing that turn's own scene, so one turn gets one scene |
+| Tier Up | The turn's Rank crosses a tier, after the outcome scene |
+| Fed Crackdown | An unseen crackdown receipt at login, or a season change mid-session |
+| Cracktro | That same login, if the caller medalled in the closed season |
+| Messages Waiting | Unseen receipts from a rival at login |
+
+Trade Warez, recruiting, garrison and crew purchases keep the carrier sweep;
+Trade is the most frequent action, and the rest are bookkeeping. A scene
+replaces the sweep whenever it plays. Any key ends the scene and the rest of
+its chain, and the key is not handed to the screen behind. Login scenes key off
+unseen receipts: once the log marks them read, they do not replay. A season
+change seen mid-session may replay its crackdown at the next login, because its
+receipt is still unread. `DOOR_SCENES=0` turns scenes off independently of
+`DOOR_SPLASH`. The fast, monochrome and plain presets never get them.
+
 ## Issue Thiesi/NetBBS#200 — War Dialer: async multiplayer BBS-crew door game — closed
 
 **Goal:** decide the design for a second door-game genre alongside

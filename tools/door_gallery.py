@@ -597,6 +597,9 @@ class Door:
         env.update(NETBBS_DOOR_INFO=str(drop_file(state, width, height, info_extra)),
                    WAR_DIALER_DB_PATH=str(state / "war-dialer.db"),
                    DOOR_SPLASH="1" if splash else "0",
+                   # A panel is the screen a walk arrives at; scenes are
+                   # reviewed frame by frame in their own tests instead.
+                   DOOR_SCENES="0",
                    PYTHONIOENCODING="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, str(door)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
