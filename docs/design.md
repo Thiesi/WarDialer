@@ -65,6 +65,37 @@ change seen mid-session may replay its crackdown at the next login, because its
 receipt is still unread. `DOOR_SCENES=0` turns scenes off independently of
 `DOOR_SPLASH`. The fast, monochrome and plain presets never get them.
 
+## NetBBS game events (issue #16)
+
+NetBBS door API 5 lets a door report what a caller earned. War Dialer reports
+four things:
+- **`rank`** when the session's caller crosses into a new `RANK_TIERS` tier.
+- **`medal`** for a closed season's medallists, gold first.
+- **`capture`** for each captured exchange, titled `the <exchange name>`.
+- **Standings:** the current season's top ten by Rank, with ties broken by
+  ascending account ID. `value` is the Rank score and `label` is the tier name.
+
+Callers with no Rank yet are left out of the standings, so a fresh season's
+table is `"rows": []`. Abandons and neutral-operator scene events are never
+reported. Throttling, consent and wording belong to NetBBS (decision #1378).
+
+`_GameEvents` holds the rules:
+- **Off by default.** It is inert unless `door_api` is at least 5 and
+  `outbound.events` is present.
+- **After commit.** Reports are queued inside the write transaction that earns
+  them. They are renamed into the drop directory only after COMMIT, and a
+  rollback discards them.
+- **Live only.** `arm` takes a baseline after login settlement. A tier or a
+  table that already held when the session started is not news.
+- **Medals once.** A season's medals come from the session whose settlement
+  archives it, which may name callers who are not playing.
+- **Standings on change.** A snapshot is sent whenever the table changes:
+  order, a score or a tier.
+- **Ordered names.** Requests are named `wardialer-<NNNNNN>-<kind>.json`, so
+  name order is write order.
+- **Never in the way.** Failures to write are swallowed, and receipts are not
+  read.
+
 ## Issue Thiesi/NetBBS#200 — War Dialer: async multiplayer BBS-crew door game — closed
 
 **Goal:** decide the design for a second door-game genre alongside

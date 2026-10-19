@@ -44,6 +44,24 @@ new file. Existing snapshot files are refused. Maintenance stays on afterward.
 Active game sessions prevent maintenance operations. NetBBS additionally
 requires its own verified complete node backup through its wrapper.
 
+## NetBBS game events
+
+Under NetBBS `door_api` 5 with game events switched on for this door
+(`outbound.events` in `door_info.json`), War Dialer reports what callers earn
+live. NetBBS's bot then announces it in chat and answers `!top wardialer`:
+
+| Event | When |
+|---|---|
+| `rank` | The caller reaches a new Rank tier during the session |
+| `medal` | A season closes; gold, silver and bronze, from the session that archives it |
+| `capture` | The caller captures an exchange |
+| standings | The current season's top ten changes, and an empty table after a season reset |
+
+Each request is renamed into the drop directory only after its action
+commits. Nothing earned offline or in an earlier session is reported. Without
+`outbound.events` (another host, standalone play, or events switched off),
+the door writes nothing.
+
 ## Classic host setup
 
 Pass the caller's drop-file **filename**, quoting paths with spaces:

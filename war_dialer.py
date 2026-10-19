@@ -1990,6 +1990,9 @@ def _archive_season(conn: sqlite3.Connection, old: int, current: int, now: datet
         record_event(conn, player['user_id'], None,
                      f"{CRACKDOWN_RECEIPT} {old}. Final Rank {player['rank']}; place {place}/{len(players)}; {medal or 'no medal'}. "
                      f"Fresh season {current}: competitive resources reset. Back on the switchboard, [I] Scene shows retained season results.", cutoff)
+    _GAME_EVENTS.event("medal", f"Season {old}",
+                       user_ids=[player['user_id'] for player in players[:3] if player['rank'] > 0])
+    _GAME_EVENTS.season_reset(current)
     # Bounded by retained history, even after a very long absence.
     for number in range(max(old + 1, current - SEASON_ARCHIVE_LIMIT), current):
         conn.execute("INSERT INTO seasons(number,ended_at,status,players) VALUES (?,?,'inactive',0)",
@@ -2154,19 +2157,177 @@ class ActionRejected(Exception):
     """Fresh state no longer permits the requested action; nothing is spent."""
 
 
+class _GameEvents:
+    """NetBBS door API 5: what a caller earned live, dropped for the host's bot.
+
+    Strictly optional. Nothing happens unless `door_info.json` carries
+    `outbound.events`, which NetBBS writes only while the SysOp has game events
+    switched on for this door; under Synchronet, Mystic or a standalone run the
+    whole class is inert. A report is queued inside the write transaction that
+    earned it and written only once that transaction commits, so a rolled-back
+    action is never announced. Every failure is swallowed: reporting never
+    changes play.
+
+    Rank tiers and standings report only from a baseline taken after login
+    settlement (`arm`), so nothing earned offline, before an upgrade or in an
+    earlier session is replayed. A season's medals come from whichever session
+    archives it, exactly once.
+    """
+
+    TYPES = ("rank", "medal", "capture")
+
+    def __init__(self) -> None:
+        self.directory: Path | None = None
+        self.types: tuple[str, ...] = ()
+        self.title_max, self.rows_max = 80, 10
+        self.user_id: int | None = None
+        self.tier: tuple[int, int] | None = None  # (season, tier) of the session's caller
+        self.standings: tuple | None = None  # the last snapshot sent, or the baseline
+        self.pending: list[tuple[str, dict]] = []
+        self.staged_tier: tuple[int, int] | None = None
+        self.staged_standings: tuple | None = None
+        self.sent = 0
+
+    def configure(self, info: dict, info_path: str | None = None) -> None:
+        self.__init__()
+        info_path = info_path if info_path is not None else os.environ.get("NETBBS_DOOR_INFO")
+        outbound = info.get("outbound")
+        if info_path is None or type(info.get("door_api")) is not int or info["door_api"] < 5:
+            return
+        if not isinstance(outbound, dict) or not isinstance(outbound.get("events"), dict):
+            return
+        events, directory = outbound["events"], outbound.get("directory")
+        if not isinstance(directory, str) or not directory:
+            return
+        types = events.get("types", list(self.TYPES))
+        self.types = tuple(t for t in self.TYPES if isinstance(types, list) and t in types)
+        for name, attr, cap in (("title_max", "title_max", 80), ("standings_rows", "rows_max", 10)):
+            value = events.get(name)
+            if type(value) is int and value > 0:
+                setattr(self, attr, min(cap, value))
+        self.directory = Path(info_path).parent / directory
+        self.user_id = info.get("user_id")
+
+    @property
+    def active(self) -> bool:
+        return self.directory is not None
+
+    def arm(self, conn: sqlite3.Connection, player: Player) -> None:
+        """The session's baseline: what its caller already holds is not news."""
+        if not self.active or player.user_id != self.user_id:
+            return
+        try:
+            self.standings = self._standings(conn)
+        except sqlite3.Error:
+            return
+        self.tier = (player.season_number, tier_index(rank_score(player)))
+
+    def event(self, kind: str, title: object, *, user_id: int | None = None,
+              user_ids: list[int] | None = None) -> None:
+        if not self.active or kind not in self.types:
+            return
+        body: dict = {"type": kind}
+        if user_ids is not None:
+            if not user_ids:
+                return
+            body["user_ids"] = list(user_ids[:3])
+        else:
+            body["user_id"] = user_id
+        body["title"] = " ".join(_event_plain(str(title)).split())[:self.title_max].rstrip()
+        self.pending.append(("event", {"event": body}))
+
+    def season_reset(self, season: int) -> None:
+        """A fresh season starts with an empty table."""
+        if self.active:
+            snapshot = (f"Season {season}", ())
+            self.pending.append(("standings", self._standings_request(snapshot)))
+            self.staged_standings = snapshot
+
+    def player_saved(self, player: Player) -> None:
+        if self.tier is None or player.user_id != self.user_id:
+            return
+        season, last = self.staged_tier or self.tier
+        tier = tier_index(rank_score(player))
+        if player.season_number == season and tier > last:
+            self.event("rank", RANK_TIERS[tier][1], user_id=player.user_id)
+        self.staged_tier = (player.season_number, tier)
+
+    def _standings(self, conn: sqlite3.Connection) -> tuple:
+        row = conn.execute("SELECT value FROM meta WHERE key='active_season'").fetchone()
+        season = int(row[0]) if row is not None else conn.execute(
+            "SELECT COALESCE(MAX(season_number), 1) FROM players").fetchone()[0]
+        rows = conn.execute(f"SELECT user_id,{_RANK_SQL} AS rank FROM players WHERE season_number=? "
+                            f"AND {_RANK_SQL}>0 ORDER BY rank DESC,user_id LIMIT ?",
+                            (season, self.rows_max)).fetchall()
+        return (f"Season {season}", tuple((r[0], r[1]) for r in rows))
+
+    def _standings_request(self, snapshot: tuple) -> dict:
+        title, rows = snapshot
+        return {"standings": {"title": title[:40], "rows": [
+            {"user_id": user_id, "value": f"{rank:,}"[:24], "label": tier_name(rank)[:40]}
+            for user_id, rank in rows]}}
+
+    def before_commit(self, conn: sqlite3.Connection) -> None:
+        """The table as this transaction leaves it, if that is news."""
+        if self.tier is None:
+            return
+        try:
+            snapshot = self._standings(conn)
+        except Exception:  # reporting never rolls back the action it reports
+            return
+        if snapshot != (self.staged_standings or self.standings):
+            self.pending.append(("standings", self._standings_request(snapshot)))
+            self.staged_standings = snapshot
+
+    def committed(self) -> None:
+        pending, self.pending = self.pending, []
+        if self.staged_tier is not None:
+            self.tier, self.staged_tier = self.staged_tier, None
+        if self.staged_standings is not None:
+            self.standings, self.staged_standings = self.staged_standings, None
+        for kind, payload in pending:
+            self._drop(kind, payload)
+
+    def rolled_back(self) -> None:
+        self.pending, self.staged_tier, self.staged_standings = [], None, None
+
+    def _drop(self, kind: str, payload: dict) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if self.directory is None or len(data) > (8192 if kind == "standings" else 2048):
+            return
+        # NetBBS answers in name order, so the counter leads and is zero-padded.
+        self.sent += 1
+        name = f"wardialer-{self.sent:06d}-{kind}"
+        part = self.directory / (name + ".part")
+        try:
+            part.write_bytes(data)
+            part.replace(self.directory / (name + ".json"))
+        except OSError:
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+_GAME_EVENTS = _GameEvents()
+
+
 @contextmanager
 def _write_transaction(conn: sqlite3.Connection):
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield
+        _GAME_EVENTS.before_commit(conn)
         conn.execute("COMMIT")
     except BaseException as exc:
+        _GAME_EVENTS.rolled_back()
         try:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")
         except sqlite3.Error as rollback_error:
             exc.add_note(f"Rollback also failed: {rollback_error}")
         raise
+    _GAME_EVENTS.committed()
 
 
 def ensure_exchanges_seeded(conn: sqlite3.Connection, season_number: int, now: datetime) -> None:
@@ -2314,6 +2475,7 @@ def _save_player(conn: sqlite3.Connection, player: Player) -> None:
     if _world_schema_version(conn) >= 11:
         conn.execute("UPDATE players SET turns_trading=? WHERE user_id=?",
                      (player.turns_trading, player.user_id))
+    _GAME_EVENTS.player_saved(player)
 
 
 _INCOME_UNITS_PER_DOLLAR = 3_600_000_000  # microseconds per hour
@@ -2852,6 +3014,7 @@ def resolve_root_exchange(
         )
         if success:
             record_scene(conn, "capture", exchange.id, now, actor_handle=actor.handle)
+            _GAME_EVENTS.event("capture", "the " + exchange.name, user_id=actor.user_id)
         if success and prior_controller is not None:
             record_event(conn, prior_controller, actor.handle,
                          f"{actor.handle} rooted your exchange, {exchange.name}! {counted(prior_garrison, 'defender')} returned to your available crew.", now)
@@ -7695,6 +7858,7 @@ def _main(argv=None) -> int:
         except OSError as exc:
             sys.stderr.write(f"War Dialer socket is unavailable: {_event_plain(str(exc))}\n")
             return 1
+    _GAME_EVENTS.configure(info)
     _DEFAULT_ENCODING = info.get("display_encoding", "utf-8") if "drop_file_type" in info else "utf-8"
     apply_display_encoding("auto")
     palette = Palette(truecolor=info.get("color_depth") == "truecolor",
@@ -7767,6 +7931,7 @@ def _main(argv=None) -> int:
         # should care about.
         is_new_player = conn.execute("SELECT 1 FROM players WHERE user_id=?", (user_id,)).fetchone() is None
         player = load_or_create_player(conn, user_id, handle, now, season_number)
+        _GAME_EVENTS.arm(conn, player)
 
         apply_display(palette, read_display(conn, user_id))
         play_splash(palette, info, player.season_number, _OUTPUT_WIDTH, height)
