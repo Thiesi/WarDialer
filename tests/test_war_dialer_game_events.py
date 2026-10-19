@@ -81,12 +81,14 @@ def test_a_live_capture_reports_one_event_and_the_table_it_changed(db_path, even
     conn, season = _setup(db_path, now)
     player = _player(conn, 1, "alice", now, season)
     wd._GAME_EVENTS.arm(conn, player)
-    assert events() == []  # the baseline is not news
+    table = ("wardialer-000001-standings.json", {"standings": {"title": f"Season {season}", "rows": []}})
+    assert events() == [table]  # the table as it stands; no event is news yet
     name = _capture(conn, player, now)
     rank = wd.rank_score(wd.read_player(conn, 1))
     assert events() == [
-        ("wardialer-000001-event.json", {"event": {"type": "capture", "user_id": 1, "title": "the " + name}}),
-        ("wardialer-000002-standings.json", {"standings": {"title": f"Season {season}", "rows": [
+        table,
+        ("wardialer-000002-event.json", {"event": {"type": "capture", "user_id": 1, "title": "the " + name}}),
+        ("wardialer-000003-standings.json", {"standings": {"title": f"Season {season}", "rows": [
             {"user_id": 1, "value": f"{rank:,}", "label": wd.tier_name(rank)}]}}),
     ]
 
@@ -156,17 +158,49 @@ def test_a_rolled_back_transaction_reports_nothing(db_path, events):
             raise RuntimeError("the action failed")
     with wd._write_transaction(conn):
         pass
-    assert events() == []
+    assert [body for _, body in events()] == [{"standings": {"title": f"Season {season}", "rows": []}}]
 
 
-def test_a_transaction_that_leaves_the_table_alone_sends_no_snapshot(db_path, events):
+def test_a_session_sends_the_table_as_it_stands_once_even_if_nothing_moves_it(db_path, events):
+    # Issue #19: a baseline NetBBS never received left `!top` empty until some
+    # session happened to reorder the top ten.
     now = wd.now_utc()
     conn, season = _setup(db_path, now)
+    _player(conn, 2, "bob", now, season, rank=700)
     player = _player(conn, 1, "alice", now, season, rank=100)
     wd._GAME_EVENTS.arm(conn, player)
     wd.read_player_page(conn, 1, now, standings=True)
     wd.list_raid_targets(conn, player, now)
-    assert events() == []
+    assert events() == [("wardialer-000001-standings.json", {"standings": {"title": f"Season {season}", "rows": [
+        {"user_id": 2, "value": "700", "label": "Hacker"},
+        {"user_id": 1, "value": "100", "label": "Wannabe"}]}})]
+
+
+def test_the_next_session_sends_its_own_table_once(db_path, tmp_path, events):
+    now = wd.now_utc()
+    conn, season = _setup(db_path, now)
+    player = _player(conn, 1, "alice", now, season, rank=100)
+    wd._GAME_EVENTS.arm(conn, player)
+    for name in [p.name for p in (tmp_path / "outbound").iterdir()]:
+        (tmp_path / "outbound" / name).unlink()  # NetBBS took it
+    info, path = _info(tmp_path)
+    wd._GAME_EVENTS.configure(info, path)  # a new launch
+    wd._GAME_EVENTS.arm(conn, player)
+    wd._GAME_EVENTS.arm(conn, player)
+    assert [body["standings"]["rows"][0]["user_id"] for _, body in events()] == [1]
+
+
+def test_a_season_closed_at_login_sends_its_empty_table_once(db_path, events):
+    now = wd.now_utc()
+    conn, season = _setup(db_path, now)
+    _player(conn, 1, "alice", now, season, rank=100)
+    later = now + wd.SEASON + timedelta(days=1)
+    player = wd.load_or_create_player(conn, 1, "alice", later, season + 1)  # login settles the close
+    wd._GAME_EVENTS.arm(conn, player)
+    assert [body for _, body in events()] == [
+        {"event": {"type": "medal", "user_ids": [1], "title": f"Season {season}"}},
+        {"standings": {"title": f"Season {season + 1}", "rows": []}},
+    ]
 
 
 def test_request_names_sort_in_the_order_they_were_written(tmp_path, events):
