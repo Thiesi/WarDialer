@@ -85,8 +85,12 @@ reported. Throttling, consent and wording belong to NetBBS (decision #1378).
 - **After commit.** Reports are queued inside the write transaction that earns
   them. They are renamed into the drop directory only after COMMIT, and a
   rollback discards them.
-- **Live only.** `arm` takes a baseline after login settlement. A tier or a
-  table that already held when the session started is not news.
+- **Live only.** `arm` takes a baseline after login settlement. A tier that
+  already held when the session started is not news.
+- **Table at start.** `arm` also sends the standings as they stand, so `!top`
+  agrees with the game from the first session that reports (issue #19). It
+  skips that send only if this session already sent the same table, such as
+  the empty one after a season closed at login.
 - **Medals once.** A season's medals come from the session whose settlement
   archives it, which may name callers who are not playing.
 - **Standings on change.** A snapshot is sent whenever the table changes:
