@@ -2355,6 +2355,30 @@ def test_real_process_neutral_capture_preview_boundaries(tmp_path, stage):
         conn.close()
 
 
+def test_back_from_a_scene_screen_returns_to_the_scene_hub(tmp_path, monkeypatch):
+    conn = wd.connect(tmp_path / 'hub.db')
+    wd.ensure_schema(conn)
+    now = wd.now_utc()
+    wd.get_or_create_season_anchor(conn, now)
+    wd.ensure_exchanges_seeded(conn, 1, now)
+    actor = wd.load_or_create_player(conn, 1, 'Caller', now, 1)
+    monkeypatch.setattr(wd, 'now_utc', lambda: now)
+    monkeypatch.setattr(wd, '_OUTPUT_WIDTH', 80)
+    written = []
+    monkeypatch.setattr(wd, 'out', written.append)
+    titles = []
+    script = iter(['1', 'B', '3', 'B', '4', 'B', '7', 'B', 'B'])
+
+    def select(valid):
+        titles.append(re.search(r'BBS SCENE|CREW INSIGNIA|SCENE BULLETINS|SEASON RESULTS|DISPLAY',
+                                _last_screen(written)).group(0))
+        return next(script)
+    monkeypatch.setattr(wd, 'read_menu_choice', select)
+    wd.do_scene(wd.Palette(False), conn, actor, 80, 24)
+    assert titles == ['BBS SCENE', 'CREW INSIGNIA', 'BBS SCENE', 'SCENE BULLETINS', 'BBS SCENE',
+                      'SEASON RESULTS', 'BBS SCENE', 'DISPLAY', 'BBS SCENE']
+
+
 @pytest.mark.parametrize('width,height', [(40, 12), (80, 24)])
 @pytest.mark.parametrize('entry', ['1', '2', '3'])
 def test_scene_and_insignia_are_free_and_fit_small_terminals(tmp_path, monkeypatch, width, height, entry):
@@ -2380,7 +2404,7 @@ def test_scene_and_insignia_are_free_and_fit_small_terminals(tmp_path, monkeypat
                 stage += 1
                 return entry
             return 'N'
-        if entry == '1':
+        if entry == '1' and stage < 3:
             key = '4' if stage == 1 else 'A'
             if key in valid:
                 stage += 1
@@ -2758,9 +2782,15 @@ def test_fast_mode_skips_only_optional_flavor_and_art(tmp_path, monkeypatch):
         palette.fast = fast
         rendered.clear()
         # The dossiers entry may sit on a later page of the scene picker at forty
-        # columns; turn pages until the digit it is keyed to is selectable.
-        monkeypatch.setattr(wd, 'read_menu_choice',
-                            lambda valid: '2' if '2' in valid else 'N' if 'N' in valid else 'B')
+        # columns; turn pages until the digit it is keyed to is selectable. The
+        # hub comes back after the dossiers, and Back there leaves it.
+        opened = []
+        def pick(valid):
+            if opened or '2' not in valid:
+                return 'B' if opened else 'N'
+            opened.append(1)
+            return '2'
+        monkeypatch.setattr(wd, 'read_menu_choice', pick)
         wd.do_scene(palette, conn, actor, 40, 12)
         dossiers = next(rows for title, rows in rendered if title == 'NEUTRAL DOSSIERS')
         drawn = any(art in line for line in dossiers for art in wd.NPC_ART.values())

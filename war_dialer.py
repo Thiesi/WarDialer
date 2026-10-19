@@ -5808,93 +5808,95 @@ def insignia_rows(p: Palette, handle: str, key: str, current: str, width: int) -
 
 
 def do_scene(p: Palette, conn: sqlite3.Connection, player: Player, width: int, height: int) -> None:
-    state = dashboard_state(conn, player.user_id, now_utc())
-    update_display_player(p, player, state.player, width, height)
-    inner = _panel_width(p, max(1, width - 1))
-    symbol, name = INSIGNIA[player.insignia]
-    rank = rank_score(player)
-    crest = compose([sty(p.mint + BOLD, _fit(_event_plain(player.handle), max(8, inner // 2)))
-                     + " " + sty(p.phosphor, gl("ins_l") + symbol + gl("ins_r")),
-                     badge(p, _fit(tier_name(rank).upper(), 16)),
-                     label_value(p, "rank", f"{rank:,}", style=p.mint),
-                     label_value(p, "kit", player.specialty or "untrained", style=p.cyan)], inner)
-    # One row an entry: a hub is a list of destinations, and every one of the
-    # seven has to be selectable on the first page of a twelve-row terminal.
-    # Each screen explains itself once it is open.
-    key = pick_record_page(p, "BBS SCENE", [
-        ([f"Crew insignia: {name}"], True),
-        (["Neutral operator dossiers"], True),
-        (["Public scene bulletins"], True),
-        (["Season results"], True),
-        (["Your season reports"], True),
-        (["Hall of Fame"], True),
-        (["Display"], True),
-    ], width, height, before=[("", crest)], heading="FREE")
-    if key in "BQ":
-        return
-    if key == "1":
-        keys = list(INSIGNIA)
-        rendered = [(insignia_rows(p, player.handle, choice, player.insignia, inner - 4), True)
-                    for choice in keys]
-        key = pick_record_page(p, "CREW INSIGNIA", [], width, height, rendered=rendered,
-                               trailing="free; no turn or resource cost")
-        if key in "BQ": return
-        choice = keys[PICK_KEYS.index(key)]
-        symbol, name = INSIGNIA[choice]
-        if show_text_pages(p, "INSIGNIA PREVIEW", [], width, height, accept=True, cards=[
-                ("", insignia_rows(p, player.handle, choice, player.insignia, inner)),
-                ("TERMS", prose_card(p, [
-                    f"Wear {symbol} {name}.",
-                    "Free: no turns, cash, Heat or Rank change. Persists across seasons and "
-                    "competition reset. Back keeps your current insignia."], inner))]) != "A":
+    """The free hub. Every screen it opens comes back to it; Back here leaves."""
+    while True:
+        state = dashboard_state(conn, player.user_id, now_utc())
+        update_display_player(p, player, state.player, width, height)
+        inner = _panel_width(p, max(1, width - 1))
+        symbol, name = INSIGNIA[player.insignia]
+        rank = rank_score(player)
+        crest = compose([sty(p.mint + BOLD, _fit(_event_plain(player.handle), max(8, inner // 2)))
+                         + " " + sty(p.phosphor, gl("ins_l") + symbol + gl("ins_r")),
+                         badge(p, _fit(tier_name(rank).upper(), 16)),
+                         label_value(p, "rank", f"{rank:,}", style=p.mint),
+                         label_value(p, "kit", player.specialty or "untrained", style=p.cyan)], inner)
+        # One row an entry: a hub is a list of destinations, and every one of the
+        # seven has to be selectable on the first page of a twelve-row terminal.
+        # Each screen explains itself once it is open.
+        key = pick_record_page(p, "BBS SCENE", [
+            ([f"Crew insignia: {name}"], True),
+            (["Neutral operator dossiers"], True),
+            (["Public scene bulletins"], True),
+            (["Season results"], True),
+            (["Your season reports"], True),
+            (["Hall of Fame"], True),
+            (["Display"], True),
+        ], width, height, before=[("", crest)], heading="FREE")
+        if key in "BQ":
             return
-        set_insignia(conn, player, choice, now_utc())
-        show_text_pages(p, "CREW IDENTITY", [f"{symbol} {name} insignia selected. No resources spent."], width, height, onboarding=True)
-    elif key == "2":
-        with _write_transaction(conn):
-            _settle_world(conn, now_utc())
-            homes = [e for e in list_exchanges(conn) if e.npc_home]
-        cards = []
-        for exchange in homes:
+        if key == "1":
+            keys = list(INSIGNIA)
+            rendered = [(insignia_rows(p, player.handle, choice, player.insignia, inner - 4), True)
+                        for choice in keys]
+            key = pick_record_page(p, "CREW INSIGNIA", [], width, height, rendered=rendered,
+                                   trailing="free; no turn or resource cost")
+            if key in "BQ": continue
+            choice = keys[PICK_KEYS.index(key)]
+            symbol, name = INSIGNIA[choice]
+            if show_text_pages(p, "INSIGNIA PREVIEW", [], width, height, accept=True, cards=[
+                    ("", insignia_rows(p, player.handle, choice, player.insignia, inner)),
+                    ("TERMS", prose_card(p, [
+                        f"Wear {symbol} {name}.",
+                        "Free: no turns, cash, Heat or Rank change. Persists across seasons and "
+                        "competition reset. Back keeps your current insignia."], inner))]) != "A":
+                continue
+            set_insignia(conn, player, choice, now_utc())
+            show_text_pages(p, "CREW IDENTITY", [f"{symbol} {name} insignia selected. No resources spent."], width, height, onboarding=True)
+        elif key == "2":
+            with _write_transaction(conn):
+                _settle_world(conn, now_utc())
+                homes = [e for e in list_exchanges(conn) if e.npc_home]
+            cards = []
+            for exchange in homes:
+                rows = []
+                if not p.fast:
+                    rows.append(sty(p.cyan, NPC_ART.get(exchange.npc_home, "[::]--[##]")))
+                rows += prose_rows(p, NPC_STORIES[exchange.npc_home], inner, style=p.ink)
+                rows += compose([label_value(p, "home", f"#{exchange.id} "
+                                             + _fit(exchange_short_name(exchange), 18), style=p.cyan),
+                                 label_value(p, "defence", str(exchange_defense(exchange)), style=p.ink),
+                                 label_value(p, "owner", _fit(owner_label(exchange), 20),
+                                             style=owner_node(p, exchange, player.user_id)[1])], inner)
+                if exchange.npc_return_at and exchange.controller_user_id is None:
+                    rows += prose_rows(p, "Returns if unclaimed: "
+                                       + when(from_iso(exchange.npc_return_at)),
+                                       inner, style=p.grey)
+                elif exchange.controller_user_id is not None:
+                    rows += prose_rows(p, "Displaced from home. The NPC cannot take a human holding.",
+                                       inner, style=p.grey)
+                else:
+                    rows += prose_rows(p, "Defending home. Capture previews show the actual stakes.",
+                                       inner, style=p.grey)
+                cards.append((NPC_NAMES[exchange.npc_home].upper(), rows))
+            show_text_pages(p, "NEUTRAL DOSSIERS", [], width, height, cards=cards or None)
+        elif key == "3":
             rows = []
-            if not p.fast:
-                rows.append(sty(p.cyan, NPC_ART.get(exchange.npc_home, "[::]--[##]")))
-            rows += prose_rows(p, NPC_STORIES[exchange.npc_home], inner, style=p.ink)
-            rows += compose([label_value(p, "home", f"#{exchange.id} "
-                                         + _fit(exchange_short_name(exchange), 18), style=p.cyan),
-                             label_value(p, "defence", str(exchange_defense(exchange)), style=p.ink),
-                             label_value(p, "owner", _fit(owner_label(exchange), 20),
-                                         style=owner_node(p, exchange, player.user_id)[1])], inner)
-            if exchange.npc_return_at and exchange.controller_user_id is None:
-                rows += prose_rows(p, "Returns if unclaimed: "
-                                   + when(from_iso(exchange.npc_return_at)),
-                                   inner, style=p.grey)
-            elif exchange.controller_user_id is not None:
-                rows += prose_rows(p, "Displaced from home. The NPC cannot take a human holding.",
-                                   inner, style=p.grey)
-            else:
-                rows += prose_rows(p, "Defending home. Capture previews show the actual stakes.",
-                                   inner, style=p.grey)
-            cards.append((NPC_NAMES[exchange.npc_home].upper(), rows))
-        show_text_pages(p, "NEUTRAL DOSSIERS", [], width, height, cards=cards or None)
-    elif key == "3":
-        rows = []
-        for bulletin in read_scene(conn):
-            rows.append(sty(p.phosphor, gl("bullet")) + " "
-                        + sty(p.grey, when(from_iso(bulletin["created_at"])))
-                        + "  " + badge(p, f"S{bulletin['season']}", style=p.cyan))
-            rows += ["  " + row for row in prose_rows(p, bulletin["summary"], inner - 2)]
-        show_text_pages(p, "SCENE BULLETINS", ["No public territory activity recorded yet."],
-                        width, height, cards=[("", rows)] if rows else None,
-                        trailing=f"latest {SCENE_LIMIT}")
-    elif key == "4":
-        show_season_results(p, conn, player.user_id, width, height)
-    elif key == "5":
-        show_season_recognition(p, conn, player.user_id, width, height)
-    elif key == "6":
-        show_season_recognition(p, conn, player.user_id, width, height, hall=True)
-    elif key == "7":
-        do_display(p, conn, player.user_id, width, height)
+            for bulletin in read_scene(conn):
+                rows.append(sty(p.phosphor, gl("bullet")) + " "
+                            + sty(p.grey, when(from_iso(bulletin["created_at"])))
+                            + "  " + badge(p, f"S{bulletin['season']}", style=p.cyan))
+                rows += ["  " + row for row in prose_rows(p, bulletin["summary"], inner - 2)]
+            show_text_pages(p, "SCENE BULLETINS", ["No public territory activity recorded yet."],
+                            width, height, cards=[("", rows)] if rows else None,
+                            trailing=f"latest {SCENE_LIMIT}")
+        elif key == "4":
+            show_season_results(p, conn, player.user_id, width, height)
+        elif key == "5":
+            show_season_recognition(p, conn, player.user_id, width, height)
+        elif key == "6":
+            show_season_recognition(p, conn, player.user_id, width, height, hall=True)
+        elif key == "7":
+            do_display(p, conn, player.user_id, width, height)
 
 
 DISPLAY_KEYS = ('ascii_art', 'monochrome', 'fast')
