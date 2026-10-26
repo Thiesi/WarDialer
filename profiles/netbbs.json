@@ -1,0 +1,20 @@
+{
+  "name": "War Dialer",
+  "executable_path": "/usr/local/bin/python3",
+  "args": ["{install_dir}/war_dialer.py"],
+  "profile": {
+    "version": 1,
+    "adapter": "native",
+    "endpoint": "stdio",
+    "install_dir": "/var/games/netbbs/war-dialer",
+    "encoding": "utf-8",
+    "width": 0,
+    "height": 0,
+    "resize_signal": true,
+    "time_limit": 1800,
+    "cpu_seconds": 900,
+    "max_sessions": 8,
+    "multinode_certified": true,
+    "environment": {"WAR_DIALER_DB_PATH": "/srv/bbs/netbbs.db.doors/war-dialer.db"}
+  }
+}
