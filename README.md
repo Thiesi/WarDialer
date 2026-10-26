@@ -164,7 +164,8 @@ Each release also ships `netbbs.json` (from `profiles/`), a NetBBS door profile
 for **[J] Import JSON**, so a SysOp can run a newer release than the one their
 NetBBS bundles. Replace its `WAR_DIALER_DB_PATH` placeholder with the node's
 own `<node>.db.doors/war-dialer.db`, which keeps the world in the node backup
-and shared with the bundled copy. The notes open with a **NetBBS:** line: when
+and shared with the bundled copy, and check `executable_path` (the Python 3.11+
+interpreter) and `install_dir` (where `war_dialer.py` lives) for your host. The notes open with a **NetBBS:** line: when
 `WORLD_SCHEMA_VERSION` is unchanged since the previous tag the release runs on
 `NETBBS_MIN` (set in the release workflow) or later; when it changes, wait for
 the NetBBS release that bundles it.

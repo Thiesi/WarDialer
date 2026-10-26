@@ -2,6 +2,10 @@
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = json.loads((ROOT / "profiles/netbbs.json").read_text(encoding="utf-8"))
@@ -43,3 +47,12 @@ def test_release_notes_read_the_schema_the_door_declares():
     # the format changed.
     assert re.search(r"^WORLD_SCHEMA_VERSION = [0-9]+$", DOOR, re.M)
     assert "^WORLD_SCHEMA_VERSION = " in WORKFLOW
+
+
+@pytest.mark.skipif(shutil.which("sed") is None, reason="needs sed, as the release runner has")
+def test_release_notes_schema_reader_finds_the_door_schema():
+    # Run the workflow's own sed expression, so drift on either side shows here.
+    expression = re.search(r"schema_of\(\) \{ sed -n '([^']+)'; \}", WORKFLOW).group(1)
+    found = subprocess.run(["sed", "-n", expression], input=DOOR.encode("utf-8"),
+                           capture_output=True, check=True).stdout.decode("utf-8").strip()
+    assert found == re.search(r"^WORLD_SCHEMA_VERSION = ([0-9]+)$", DOOR, re.M).group(1)

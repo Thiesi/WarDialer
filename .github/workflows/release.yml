@@ -39,7 +39,7 @@ jobs:
           else
             line="**NetBBS:** changes the save format (world schema $schema); wait for the NetBBS release that bundles it."
           fi
-          printf '%s\n\nImport `netbbs.json` with **[J] Import JSON** and replace the `WAR_DIALER_DB_PATH` placeholder with your node'"'"'s own `<node>.db.doors/war-dialer.db`.\n' "$line" > NOTES.md
+          printf '%s\n\nImport `netbbs.json` with **[J] Import JSON**, replace the `WAR_DIALER_DB_PATH` placeholder with your node'"'"'s own `<node>.db.doors/war-dialer.db`, and check `executable_path` and `install_dir` for your host.\n' "$line" > NOTES.md
           cat NOTES.md
       - name: Publish the door, its NetBBS profile and checksums
         env:
