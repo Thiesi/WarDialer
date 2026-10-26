@@ -65,6 +65,56 @@ change seen mid-session may replay its crackdown at the next login, because its
 receipt is still unread. `DOOR_SCENES=0` turns scenes off independently of
 `DOOR_SPLASH`. The fast, monochrome and plain presets never get them.
 
+## Carrier Detect presentation (issue #24)
+
+War Dialer is a phreaker's phosphor terminal patched into the switched
+telephone network, so everything on it reads as a signal on a wire. Where
+Lunar Lander paints a scene and instruments over it, War Dialer is a
+luminous information console. Its beauty is in its type, its diagrams and
+its signal, and pixel art is kept for marquee moments. The overhaul is
+presentation only: every key, number, wording, screen order and page counter
+is unchanged, and hotkeys still print as `[K]`.
+
+- **Glass.** A framed screen is a slab of dark green glass, every other row
+  a shade deeper (the tube's scanlines, which also stripe a table). The title
+  is a lit tab. Section rules glow beside their label and cool to chrome.
+  Corners are arcs, the splash ring's own. Keys sit on amber plates and badges
+  on chips. Controls stay under the glass.
+- **Signal.** Meters resolve to an eighth of a cell. Heat's ramp lies along
+  the whole track, phosphor to the bust line's red, so a half-full gauge
+  already shows amber at its tip.
+- **The switch ring.** From 50 columns the ten exchanges are a lit loop with
+  their numbers on the nodes, their names beside them and the owner counts
+  inside. A link between two neighbours one crew holds is drawn in that crew's
+  color. `scene_map` remains the compact map below that width.
+- **Wide console.** Up to 99 columns the layout and page budgets are what
+  they were. From 100 columns a screen grows to 104 columns, centred. The
+  switchboard then sets the crew's instruments and the ring side by side
+  (`Split` cards, with `┬`/`┴` joints), on one page at 132x40.
+- **Hayes codes.** A result is stamped CONNECT (the roll won), NO CARRIER (it
+  lost), OK (no roll: trades, purchases, transfers) or BUSTED, above the
+  headline that says the same in words. The stamp needs 20 rows. Leaving the
+  door ends on NO CARRIER.
+- **Attract mode.** The large splash dials, then sweeps the exchange for
+  carriers: busy, voice, fax, the odd carrier, and finally 555-0142. Then
+  CONNECT, the tube clears, the quarter-block wordmark burns in, and the
+  tagline and ring follow. On a terminal bigger than the composition the scan
+  stays around it as a dim backdrop whose carriers glint during the hold. It
+  takes about 3.6 seconds and any key skips it, as before.
+- **Scenes** play on a pane of the same glass with a lower-third caption
+  band. Tier-up letters and the cracktro's wordmark are pixel art. The
+  cracktro keeps its black starfield.
+
+Pixel art is quarter blocks, two pixels across and two down a cell, each
+cell showing the two colors that lose least (Lunar Lander's encoder, copied).
+It falls back to half blocks when NetBBS reports `quadrants: false` or a
+CP437/ASCII charset, when the output encoding is CP437, or when
+`DOOR_PIXELS=half` is set. Any RGB has an xterm-256 reading (cube or grey ramp)
+and a sixteen-color reading by hue family. Backgrounds (glass, plates, scene
+panes) need 256 colors or truecolor. Sixteen-color callers keep the classic
+frame, whole-cell meters and pixel art as a silhouette. ASCII decorations get
+text where art would be, monochrome gets no SGR, and Fast mode stays unframed.
+
 ## NetBBS game events (issue #16)
 
 NetBBS door API 5 lets a door report what a caller earned. War Dialer reports

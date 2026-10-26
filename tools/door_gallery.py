@@ -451,9 +451,9 @@ SETUP: dict[str, dict[str, bytes]] = {
 # unchecked.
 SHOWS: dict[str, dict[str, str]] = {
     "war_dialer": {
-        # `painted` collapses runs of spaces, so the letter-spaced wordmark is
-        # matched single-spaced; Fast mode draws no art and says it plainly.
-        "Masthead": {"*": "W A R D I A L E R", "fast": "WAR DIALER"},
+        # The wordmark is pixel art where it fits (#24), so the masthead is
+        # known by its pitch; Fast mode draws no art and says it plainly.
+        "Masthead": {"*": "Rival crews.", "fast": "WAR DIALER"},
         "Launch splash": "CONNECT 14400",
         "First visit": "FIRST VISIT",
         "While you were away": "WHILE YOU WERE AWAY",
@@ -1224,14 +1224,15 @@ preset. Attach this page to any pull request that changes a screen.</p>
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--widths", type=int, nargs="+", default=[80, 64, 40],
+    parser.add_argument("--widths", type=int, nargs="+", default=[132, 80, 64, 40],
                         help="terminal widths to render (the supported floor is 40)")
     parser.add_argument("--out", type=pathlib.Path, default=ROOT / "build" / "gallery")
     parser.add_argument("--fresh", action="store_true", help="rebuild the cached fixture first")
     parser.add_argument("--open", action="store_true", help="open the page when it is written")
     args = parser.parse_args()
 
-    heights = {80: 24, 64: 20, 40: 12}
+    # 132x40 is the wide console (#24): centred, and the switchboard side by side.
+    heights = {132: 40, 80: 24, 64: 20, 40: 12}
     out_dir = args.out.expanduser().resolve()
     target = build("war_dialer", args.widths, heights, out_dir, args.fresh)
     print(f"wrote {target}")
