@@ -11,8 +11,10 @@ decorations, monochrome and Fast mode most of all.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -330,15 +332,55 @@ def test_a_scene_is_centred_whether_composed_for_the_console_or_the_terminal(mon
     assert wd._Stage(_palette(), panel, 40, 1).left == (panel - console.cols) // 2
 
 
+def test_console_scenes_land_in_the_console_on_a_wide_terminal(monkeypatch):
+    # #27, by behaviour: a bust and a season change played on a 132-column
+    # terminal are shifted into the console margin by their callers.
+    monkeypatch.setattr(wd, "_OUTPUT_WIDTH", 132)
+    panel = wd.apply_layout(132)
+    assert wd._MARGIN
+    placed: list[int] = []
+    real = wd._Stage
+
+    class Recording(real):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            placed.append(self.left)
+
+    monkeypatch.setattr(wd, "_Stage", Recording)
+    # Only what a bust scene reads of its player.
+    player = SimpleNamespace(handle="Neo", season_number=1, turns_used=1, cash=100, crew=3)
+    for compose in wd.outcome_scenes(_palette(), player, wd.ActionDelta(cash=-10, crew=-1), True,
+                                     ["Busted."], panel, 40, None):
+        compose()
+    monkeypatch.setattr(wd, "play_scene", lambda p, width, height, compose: compose())
+    monkeypatch.setattr(wd, "show_text_pages", lambda *args, **kwargs: None)
+    wd.draw_season_change(_palette(), 2, panel, 40)
+    centred = (132 - real(_palette(), 132, 40, 1).cols) // 2
+    assert placed == [centred, centred]
+
+
 def test_every_console_scene_is_placed_by_its_caller():
-    # #27: _Stage no longer reads the layout globals; the scenes played from
-    # the console pass the margin and the login scenes do not.
-    source = Path(wd.__file__).read_text(encoding="utf-8")
-    stage = source[source.index("class _Stage:"):source.index("def put(", source.index("class _Stage:"))]
-    assert "_MARGIN" not in stage and "_OUTPUT_WIDTH" not in stage
-    login = source[source.index("def login_scenes("):source.index("def draw_title(")]
-    assert "margin=" not in login
-    assert source.count("margin=_MARGIN, seed=") == 7
+    # #27: _Stage no longer reads the layout globals, so its callers must say
+    # where a scene sits. Read from the syntax tree rather than the text, so a
+    # rewrapped call still counts and a new caller cannot slip past: every
+    # scene composed outside `login_scenes` passes the console margin, and the
+    # login scenes, composed at the terminal's own width, pass none.
+    tree = ast.parse(Path(wd.__file__).read_text(encoding="utf-8"))
+    stage = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "_Stage")
+    read = {node.id for node in ast.walk(stage) if isinstance(node, ast.Name)}
+    assert not read & {"_MARGIN", "_OUTPUT_WIDTH"}
+    placed: dict[str, list[ast.expr | None]] = {}
+    for function in tree.body:
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        for call in ast.walk(function):
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                    and call.func.id.endswith("_scene_frames")):
+                margin = next((kw.value for kw in call.keywords if kw.arg == "margin"), None)
+                placed.setdefault(function.name, []).append(margin)
+    assert len(placed.pop("login_scenes")) == 3 and placed
+    assert all(isinstance(margin, ast.Name) and margin.id == "_MARGIN"
+               for margins in placed.values() for margin in margins), placed
 
 
 def test_scenes_play_on_glass_only_where_there_is_glass():

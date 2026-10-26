@@ -5558,7 +5558,8 @@ def _tick_text(start: int, end: int, step: int, steps: int) -> str:
 
 # -- 1. Patch In: Root the Exchange ------------------------------------------------
 
-def root_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
+def root_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+                      margin: int = 0,
                       handle: str = "", exchange_name: str = "", role: str = "pbx",
                       defender: str | None = None, kinds: list[str | None] | None = None,
                       index: int = 0, success: bool = True,
@@ -5682,7 +5683,8 @@ _BUST_LOG = ("CONNECT 14400", "> LIST /WAREZ", "XFER 0DAY.ZIP", "> WHO", "CARRIE
              "> DIAL 555-0199", "BUFFER FULL", "> PAGE SYSOP")
 
 
-def bust_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
+def bust_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+                      margin: int = 0,
                       cash_before: int = 0, cash_after: int = 0, crew_before: int = 1,
                       crew_after: int = 1, caption: str = "", sub: str = "") -> list[list[SplashOp]]:
     st = _Stage(p, width, height, seed, margin=margin)
@@ -5761,7 +5763,8 @@ def bust_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, mar
 
 # -- 3. Raid ---------------------------------------------------------------------------
 
-def raid_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0, handle: str = "",
+def raid_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, handle: str = "",
+                      margin: int = 0,
                       target: str = "", success: bool = True, amount: int = 0, crew: int = 1,
                       crew_lost: int = 0, caption: str = "", sub: str = "") -> list[list[SplashOp]]:
     st = _Stage(p, width, height, seed, margin=margin)
@@ -5837,7 +5840,8 @@ def raid_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, mar
 
 # -- 4. Fed Crackdown ----------------------------------------------------------------
 
-def crackdown_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
+def crackdown_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+                           margin: int = 0,
                            season_number: int = 1, caption: str = "", sub: str = "") -> list[list[SplashOp]]:
     st = _Stage(p, width, height, seed, margin=margin)
     rng, large = st.rng, st.large
@@ -5908,7 +5912,8 @@ def _tier_word(text: str) -> list[str]:
     return rows
 
 
-def tier_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0, handle: str = "",
+def tier_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, handle: str = "",
+                      margin: int = 0,
                       old_tier: str = "", new_tier: str = "", rank: int = 0,
                       caption: str = "", sub: str = "") -> list[list[SplashOp]]:
     st = _Stage(p, width, height, seed, margin=margin)
@@ -5995,7 +6000,8 @@ def tier_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, mar
 
 # -- 6 and 7. Contract hacks, and an operation's execution ---------------------------
 
-def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0, handle: str = "",
+def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, handle: str = "",
+                      margin: int = 0,
                       contract: int = 0, approach: int = 1, success: bool = True, payout: int = 0,
                       crew_lost: int = 0, operation: bool = False,
                       caption: str = "", sub: str = "") -> list[list[SplashOp]]:
@@ -6106,7 +6112,8 @@ def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, mar
 
 # -- 8. Messages Waiting -----------------------------------------------------------------
 
-def messages_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
+def messages_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+                          margin: int = 0,
                           actors: list[str] | None = None, count: int = 0,
                           caption: str = "", sub: str = "") -> list[list[SplashOp]]:
     st = _Stage(p, width, height, seed, margin=margin)
@@ -6163,7 +6170,8 @@ def messages_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
 
 # -- 9. Cracktro: a medal's season ---------------------------------------------------
 
-def cracktro_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
+def cracktro_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+                          margin: int = 0,
                           season_number: int = 1, podium: list[tuple[str, str, int]] | None = None,
                           handle: str = "", placement: int = 1,
                           caption: str = "", sub: str = "") -> list[list[SplashOp]]:
@@ -6247,7 +6255,8 @@ def outcome_scenes(p: Palette, player: Player | None, delta: ActionDelta, busted
     if busted and player is not None:
         seed = _scene_seed(player.handle, player.season_number, player.turns_used, "bust")
         composers.append(lambda: bust_scene_frames(
-            p, width, height, margin=_MARGIN, seed=seed, cash_before=player.cash - delta.cash, cash_after=player.cash,
+            p, width, height, seed=seed, cash_before=player.cash - delta.cash, cash_after=player.cash,
+            margin=_MARGIN,
             crew_before=max(1, player.crew - delta.crew), crew_after=player.crew,
             caption="*** BUSTED *** Heat reset to 0", sub=headlines[-1] if headlines else ""))
     elif scene is not None:
@@ -6258,7 +6267,8 @@ def outcome_scenes(p: Palette, player: Player | None, delta: ActionDelta, busted
         if tier_index(after) > tier_index(before):
             seed = _scene_seed(player.handle, player.season_number, after, "tier")
             composers.append(lambda: tier_scene_frames(
-                p, width, height, margin=_MARGIN, seed=seed, handle=player.handle, old_tier=tier_name(before),
+                p, width, height, seed=seed, handle=player.handle, old_tier=tier_name(before),
+                margin=_MARGIN,
                 new_tier=tier_name(after), rank=after,
                 caption=f"Promoted: {tier_name(after)}",
                 sub=f"Rank {after:,}, up from {tier_name(before)}"))
@@ -8266,7 +8276,8 @@ def do_operation(p: Palette, conn: sqlite3.Connection, player: Player, rng: rand
         lines = [name, f"Operation succeeded! Gross payout ${payout}; slot clear." if success else
                  f"Execution failed. Recovery payout ${payout}; casing retained. Prepare again before retrying."]
         scene = lambda: hack_scene_frames(
-            p, width, height, margin=_MARGIN, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "operation"),
+            p, width, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "operation"),
+            margin=_MARGIN,
             handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
             payout=payout, crew_lost=max(0, -delta.crew), operation=True, caption=lines[1], sub=name)
     show_action_result(p, lines, delta, busted, width, height, player=player,
@@ -8444,7 +8455,8 @@ def do_job(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
     lines = [f"Job: {name} ({JOB_APPROACHES[choice.approach][0]})",
              f"Success! Gross payout ${payout}." if success else f"Job failed. Recovery payout ${payout}."]
     scene = lambda: hack_scene_frames(
-        p, w, height, margin=_MARGIN, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "job"),
+        p, w, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "job"),
+        margin=_MARGIN,
         handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
         payout=payout, crew_lost=max(0, -delta.crew), caption=lines[1], sub=lines[0])
     show_action_result(p, lines, delta, busted, w, height, player=player, scene=scene, success=success)
@@ -8463,7 +8475,8 @@ def do_raid(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
     )
     headline = f"You hit {target.handle}; gross take ${amount}." if success else f"The raid on {target.handle} failed."
     scene = lambda: raid_scene_frames(
-        p, w, height, margin=_MARGIN, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "raid"),
+        p, w, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "raid"),
+        margin=_MARGIN,
         handle=player.handle, target=target.handle, success=success, amount=amount, crew=player.crew,
         crew_lost=max(0, -delta.crew), caption=headline,
         sub=f"+{delta.rank} Rank" if success else f"{delta.crew:+} crew, {delta.cash:+,} cash")
@@ -8513,7 +8526,8 @@ def do_root_exchange(p: Palette, conn: sqlite3.Connection, player: Player, now: 
     if success:
         kinds[index] = "mine"
     scene = lambda: root_scene_frames(
-        p, w, height, margin=_MARGIN, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "root"),
+        p, w, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "root"),
+        margin=_MARGIN,
         handle=player.handle, exchange_name=exchange.name, role=exchange.role,
         defender=None if defender == "free" else defender, kinds=kinds, index=index, success=success,
         caption=headline, sub=(f"+{delta.rank} Rank, ${exchange.income_per_hour}/hour" if success
@@ -8620,7 +8634,8 @@ def do_garrison(p: Palette, conn: sqlite3.Connection, player: Player, width: int
 
 def draw_season_change(p: Palette, season_number: int, width: int = 78, height: int = 24) -> None:
     play_scene(p, width, height, lambda: crackdown_scene_frames(
-        p, width, height, margin=_MARGIN, seed=_scene_seed(season_number, "crackdown"), season_number=season_number,
+        p, width, height, seed=_scene_seed(season_number, "crackdown"), season_number=season_number,
+        margin=_MARGIN,
         caption=f"Fed crackdown: season {season_number} has started.",
         sub="Crews and exchanges have reset."))
     inner = _panel_width(p, max(1, width - 1))
