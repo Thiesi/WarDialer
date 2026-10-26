@@ -369,18 +369,21 @@ def test_every_console_scene_is_placed_by_its_caller():
     stage = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "_Stage")
     read = {node.id for node in ast.walk(stage) if isinstance(node, ast.Name)}
     assert not read & {"_MARGIN", "_OUTPUT_WIDTH"}
-    placed: dict[str, list[ast.expr | None]] = {}
-    for function in tree.body:
-        if not isinstance(function, ast.FunctionDef):
-            continue
-        for call in ast.walk(function):
-            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-                    and call.func.id.endswith("_scene_frames")):
-                margin = next((kw.value for kw in call.keywords if kw.arg == "margin"), None)
-                placed.setdefault(function.name, []).append(margin)
-    assert len(placed.pop("login_scenes")) == 3 and placed
-    assert all(isinstance(margin, ast.Name) and margin.id == "_MARGIN"
-               for margins in placed.values() for margin in margins), placed
+
+    def margins(node: ast.AST) -> dict[int, ast.expr | None]:
+        return {id(call): next((kw.value for kw in call.keywords if kw.arg == "margin"), None)
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                and call.func.id.endswith("_scene_frames")}
+
+    everywhere = margins(tree)  # functions, methods and lambdas alike
+    login = margins(next(node for node in tree.body
+                         if isinstance(node, ast.FunctionDef) and node.name == "login_scenes"))
+    assert len(login) == 3
+    assert all(margin is None for margin in login.values())
+    console = [margin for call, margin in everywhere.items() if call not in login]
+    assert console
+    assert all(isinstance(margin, ast.Name) and margin.id == "_MARGIN" for margin in console)
 
 
 def test_scenes_play_on_glass_only_where_there_is_glass():
