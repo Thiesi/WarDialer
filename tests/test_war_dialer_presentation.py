@@ -4933,3 +4933,18 @@ def test_feed_marks_only_the_wrapped_tail_of_a_receipt():
     marks = [isinstance(row, wd.Cont) for row in rows]
     half = len(rows) // 2
     assert half > 1 and marks[:half] == marks[half:] == [False] + [True] * (half - 1)
+
+
+def test_feed_lights_the_keys_its_own_receipts_point_at():
+    palette = wd.Palette(True)
+    own = wd.GameEvent(id=1, actor_handle=None, created_at="2026-10-24T10:00:00+00:00", seen_at=None,
+                       summary_text="Fresh season 4: competitive resources reset. Back on the "
+                                    "switchboard, [I] Scene shows retained season results.")
+    rival = wd.GameEvent(id=2, actor_handle="[A]ce", created_at="2026-10-24T11:00:00+00:00", seen_at=None,
+                         summary_text="[A]ce raided you and got away with $40!")
+    rows = wd.feed(palette, [own, rival], 40)
+    raided = next(index for index, row in enumerate(rows) if "[A]ce" in row)
+    assert wd.keycap(palette, "I") in "".join(rows[:raided])
+    # A rival's handle is the rival's text, not a key.
+    assert wd.keycap(palette, "A") not in "".join(rows[raided:])
+    assert _color_before(rows[raided], "[A]ce") == palette.magenta

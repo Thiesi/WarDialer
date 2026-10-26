@@ -3778,9 +3778,22 @@ def feed(p: Palette, events: list[GameEvent], width: int, *, limit: int = 6) -> 
         wrapped = _wrap_output(_event_plain(event.summary_text),
                                max(8, width - _dlen(lead))).split("\r\n")
         tone = p.magenta if hostile else p.ink
-        rows.append(bullet + " " + sty(p.grey, stamp) + " " + sty(tone, wrapped[0]))
-        rows.extend(Cont(" " * _dlen(lead) + sty(tone, line)) for line in wrapped[1:])
+        # The door's own receipts point at keys ("[I] Scene shows ..."), lit
+        # as they are everywhere else. A rival's row carries a handle the
+        # rival chose, and a "[A]ce" there is not a key to press.
+        paint = (lambda line: sty(tone, line)) if hostile else (lambda line: _feed_keys(p, line, tone))
+        rows.append(bullet + " " + sty(p.grey, stamp) + " " + paint(wrapped[0]))
+        rows.extend(Cont(" " * _dlen(lead) + paint(line)) for line in wrapped[1:])
     return rows or [sty(p.grey, NO_EVENTS)]
+
+
+_FEED_KEY = re.compile(r"(\[[^\[\]]\])")
+
+
+def _feed_keys(p: Palette, line: str, tone: str) -> str:
+    """A receipt row in its tone, with each single-character `[K]` a keycap."""
+    return "".join(keycap(p, piece[1]) if _FEED_KEY.fullmatch(piece) else sty(tone, piece)
+                   for piece in _FEED_KEY.split(line) if piece)
 
 
 def key_bar(p: Palette, entries: tuple, width: int, budget: int) -> list[str]:
