@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # The oldest NetBBS whose backups accept the current world schema. Raise it
+  # with the release that changes WORLD_SCHEMA_VERSION.
+  NETBBS_MIN: "7.41.0"
+
 jobs:
   test:
     uses: ./.github/workflows/ci.yml
@@ -17,12 +22,30 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The previous tag's world schema decides the compatibility line.
+          fetch-depth: 0
       - name: Verify the asset is byte-identical to the tagged blob
         run: test "$(git hash-object war_dialer.py)" = "$(git rev-parse "$GITHUB_REF_NAME:war_dialer.py")"
-      - name: Publish the door and checksum
+      - name: Say whether NetBBS can run this release before it bundles it
+        run: |
+          schema_of() { sed -n 's/^WORLD_SCHEMA_VERSION = \([0-9][0-9]*\)$/\1/p'; }
+          schema=$(schema_of < war_dialer.py)
+          test -n "$schema"
+          previous=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          before=$(test -n "$previous" && git show "$previous:war_dialer.py" | schema_of || true)
+          if [ "$schema" = "$before" ]; then
+            line="**NetBBS:** saved data unchanged (world schema $schema); runs on NetBBS $NETBBS_MIN or later."
+          else
+            line="**NetBBS:** changes the save format (world schema $schema); wait for the NetBBS release that bundles it."
+          fi
+          printf '%s\n\nImport `netbbs.json` with **[J] Import JSON**, replace the `WAR_DIALER_DB_PATH` placeholder with your node'"'"'s own `<node>.db.doors/war-dialer.db`, and check `executable_path` and `install_dir` for your host.\n' "$line" > NOTES.md
+          cat NOTES.md
+      - name: Publish the door, its NetBBS profile and checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum war_dialer.py > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" war_dialer.py SHA256SUMS \
-            --title "War Dialer $GITHUB_REF_NAME" --generate-notes --verify-tag
+          cp profiles/netbbs.json netbbs.json
+          sha256sum war_dialer.py netbbs.json > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" war_dialer.py netbbs.json SHA256SUMS \
+            --title "War Dialer $GITHUB_REF_NAME" --notes-file NOTES.md --generate-notes --verify-tag
