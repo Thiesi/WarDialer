@@ -11,6 +11,7 @@ decorations, monochrome and Fast mode most of all.
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
 
 import pytest
@@ -319,12 +320,25 @@ def test_the_scan_lands_on_the_number_it_dials(width, height):
 
 def test_a_scene_is_centred_whether_composed_for_the_console_or_the_terminal(monkeypatch):
     """Action scenes are composed at the console's width and login scenes at the
-    terminal's; on a wide terminal both land in the same place."""
+    terminal's; on a wide terminal both land in the same place. The caller says
+    which it is (#27): a console scene passes the margin, a terminal one none."""
     monkeypatch.setattr(wd, "_OUTPUT_WIDTH", 132)
     panel = wd.apply_layout(132)
-    console = wd._Stage(_palette(), panel, 40, 1)
+    console = wd._Stage(_palette(), panel, 40, 1, margin=wd._MARGIN)
     terminal = wd._Stage(_palette(), 132, 40, 1)
     assert console.left == terminal.left == (132 - console.cols) // 2
+    assert wd._Stage(_palette(), panel, 40, 1).left == (panel - console.cols) // 2
+
+
+def test_every_console_scene_is_placed_by_its_caller():
+    # #27: _Stage no longer reads the layout globals; the scenes played from
+    # the console pass the margin and the login scenes do not.
+    source = Path(wd.__file__).read_text(encoding="utf-8")
+    stage = source[source.index("class _Stage:"):source.index("def put(", source.index("class _Stage:"))]
+    assert "_MARGIN" not in stage and "_OUTPUT_WIDTH" not in stage
+    login = source[source.index("def login_scenes("):source.index("def draw_title(")]
+    assert "margin=" not in login
+    assert source.count("margin=_MARGIN, seed=") == 7
 
 
 def test_scenes_play_on_glass_only_where_there_is_glass():

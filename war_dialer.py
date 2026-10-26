@@ -437,9 +437,11 @@ class Palette:
     def rgb(self, name: str) -> tuple[int, int, int]:
         return self.ROLES[name][0]
 
-    def tone(self, rgb: tuple[int, int, int]) -> str:
-        """Any color as a foreground, at this caller's depth (Carrier Detect, #24)."""
-        return self._sgr(tuple(max(0, min(255, int(v))) for v in rgb))
+    def tone(self, rgb: tuple[int, int, int], idx256: int | None = None) -> str:
+        """Any color as a foreground, at this caller's depth (Carrier Detect, #24).
+
+        `idx256` is an authored 256-color stand-in; without one it is computed."""
+        return self._sgr(tuple(max(0, min(255, int(v))) for v in rgb), idx256)
 
     def ground(self, rgb: tuple[int, int, int]) -> str:
         """Any color as a *background* -- or nothing where a background would hurt.
@@ -4656,10 +4658,6 @@ def _splash_word(font: dict[str, tuple[str, ...]], text: str, gap: int, space: i
     return out_rows
 
 
-def _splash_rgb(p: Palette, rgb: tuple[int, int, int], idx256: int) -> str:
-    return p._sgr(tuple(max(0, min(255, int(v))) for v in rgb), idx256)
-
-
 def splash_layout(width: int, height: int) -> tuple[str, int, int, int, int]:
     """("large" | "compact", top, left, rows, columns) of the composition.
 
@@ -4985,8 +4983,8 @@ def splash_frames(p: Palette, info: dict, season_number: int, width: int, height
 
     phosphor, dim, grey = p.phosphor, p.phosphor_dim, p.grey
     amber_b = p.amber + BOLD
-    ink = _splash_rgb(p, (235, 255, 240), 231)
-    hot = _splash_rgb(p, (190, 255, 205), 157)
+    ink = p.tone((235, 255, 240), 231)
+    hot = p.tone((190, 255, 205), 157)
 
     # -- the call --------------------------------------------------------------
     frame()
@@ -5026,7 +5024,7 @@ def splash_frames(p: Palette, info: dict, season_number: int, width: int, height
         segments: list[tuple[str, str]] = []
         for c in range(c0, c1):
             ch, role = cells[r][c]
-            style = (override or _splash_rgb(p, ramp_tc[r], ramp_256[r])) if role else ""
+            style = (override or p.tone(ramp_tc[r], ramp_256[r])) if role else ""
             if segments and segments[-1][0] == style:
                 segments[-1] = (style, segments[-1][1] + ch)
             else:
@@ -5290,18 +5288,19 @@ class _Stage:
 
     def __init__(self, p: Palette, width: int, height: int, seed: int, *,
                  geometry: tuple[int, int, int, int] | None = None, hint: str | None = SCENE_HINT,
-                 glass: bool = True):
+                 glass: bool = True, margin: int = 0):
         kind, self.top, self.left, self.rows, self.cols = splash_layout(width, height)
         if geometry is not None:
             # The whole terminal, or any box of it: the splash's attract mode
             # spreads past the scenes' 80x24 composition (Carrier Detect, #24).
             self.top, self.left, self.rows, self.cols = geometry
-        elif width + 2 * _MARGIN <= _OUTPUT_WIDTH:
+        elif margin:
             # A scene composed for the console's width sits where the console
-            # does: in the middle of a wide terminal. One composed for the
-            # terminal itself (the login scenes) is centred in it already.
-            self.left += _MARGIN
-            width += _MARGIN
+            # does, `margin` columns in on a wide terminal; its caller says so.
+            # One composed for the terminal itself (the login scenes) is
+            # centred in it already and passes none.
+            self.left += margin
+            width += margin
         self.p, self.large = p, kind == "large"
         self.width, self.height = width, height
         self.rng = random.Random(seed)
@@ -5559,12 +5558,12 @@ def _tick_text(start: int, end: int, step: int, steps: int) -> str:
 
 # -- 1. Patch In: Root the Exchange ------------------------------------------------
 
-def root_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+def root_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
                       handle: str = "", exchange_name: str = "", role: str = "pbx",
                       defender: str | None = None, kinds: list[str | None] | None = None,
                       index: int = 0, success: bool = True,
                       caption: str = "", sub: str = "") -> list[list[SplashOp]]:
-    st = _Stage(p, width, height, seed)
+    st = _Stage(p, width, height, seed, margin=margin)
     rng, large = st.rng, st.large
     kinds = list(kinds or [None] * 10)[:10] + [None] * max(0, 10 - len(kinds or []))
     defender_style = _holder_mark(p, defender)[1] if defender else p.grey
@@ -5683,10 +5682,10 @@ _BUST_LOG = ("CONNECT 14400", "> LIST /WAREZ", "XFER 0DAY.ZIP", "> WHO", "CARRIE
              "> DIAL 555-0199", "BUFFER FULL", "> PAGE SYSOP")
 
 
-def bust_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+def bust_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
                       cash_before: int = 0, cash_after: int = 0, crew_before: int = 1,
                       crew_after: int = 1, caption: str = "", sub: str = "") -> list[list[SplashOp]]:
-    st = _Stage(p, width, height, seed)
+    st = _Stage(p, width, height, seed, margin=margin)
     rng, large = st.rng, st.large
     if large:
         mon = (3, 14, 14, st.cols - 15)
@@ -5762,10 +5761,10 @@ def bust_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
 
 # -- 3. Raid ---------------------------------------------------------------------------
 
-def raid_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, handle: str = "",
+def raid_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0, handle: str = "",
                       target: str = "", success: bool = True, amount: int = 0, crew: int = 1,
                       crew_lost: int = 0, caption: str = "", sub: str = "") -> list[list[SplashOp]]:
-    st = _Stage(p, width, height, seed)
+    st = _Stage(p, width, height, seed, margin=margin)
     large = st.large
     if large:
         lb, rb, line_row, stamp_row = (4, 2, 11, 24), (4, st.cols - 26, 11, st.cols - 4), 7, 14
@@ -5838,9 +5837,9 @@ def raid_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, han
 
 # -- 4. Fed Crackdown ----------------------------------------------------------------
 
-def crackdown_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+def crackdown_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
                            season_number: int = 1, caption: str = "", sub: str = "") -> list[list[SplashOp]]:
-    st = _Stage(p, width, height, seed)
+    st = _Stage(p, width, height, seed, margin=margin)
     rng, large = st.rng, st.large
     kinds = [rng.choice(("mine", "rival", "rival", "npc", None)) for _ in range(10)]
     if large:
@@ -5909,10 +5908,10 @@ def _tier_word(text: str) -> list[str]:
     return rows
 
 
-def tier_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, handle: str = "",
+def tier_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0, handle: str = "",
                       old_tier: str = "", new_tier: str = "", rank: int = 0,
                       caption: str = "", sub: str = "") -> list[list[SplashOp]]:
-    st = _Stage(p, width, height, seed)
+    st = _Stage(p, width, height, seed, margin=margin)
     large = st.large
     names = [name for _, name in RANK_TIERS]
     old_i = names.index(old_tier) if old_tier in names else 0
@@ -5940,9 +5939,9 @@ def tier_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, han
         st.snap()
         st.snap()
 
-    ramp = [_splash_rgb(p, (150, 255, 160), 120), _splash_rgb(p, (57, 255, 20), 82),
-            _splash_rgb(p, (28, 175, 36), 40)]
-    hot = _splash_rgb(p, (235, 255, 240), 231)
+    ramp = [p.tone((150, 255, 160), 120), p.tone((57, 255, 20), 82),
+            p.tone((28, 175, 36), 40)]
+    hot = p.tone((235, 255, 240), 231)
     if use_font and not _ASCII_DECOR:
         # The new tier in lit phosphor pixels (#24): the beam writes it across,
         # then passes down it once.
@@ -5996,11 +5995,11 @@ def tier_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, han
 
 # -- 6 and 7. Contract hacks, and an operation's execution ---------------------------
 
-def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, handle: str = "",
+def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0, handle: str = "",
                       contract: int = 0, approach: int = 1, success: bool = True, payout: int = 0,
                       crew_lost: int = 0, operation: bool = False,
                       caption: str = "", sub: str = "") -> list[list[SplashOp]]:
-    st = _Stage(p, width, height, seed)
+    st = _Stage(p, width, height, seed, margin=margin)
     rng, large = st.rng, st.large
     win = (2, 4, 17, st.cols - 5) if large else (1, 1, 9, st.cols - 2)
     inner = win[3] - win[1] - 3
@@ -6107,10 +6106,10 @@ def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, han
 
 # -- 8. Messages Waiting -----------------------------------------------------------------
 
-def messages_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+def messages_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
                           actors: list[str] | None = None, count: int = 0,
                           caption: str = "", sub: str = "") -> list[list[SplashOp]]:
-    st = _Stage(p, width, height, seed)
+    st = _Stage(p, width, height, seed, margin=margin)
     large = st.large
     actors = actors or []
     machine = (3, 12, 15, st.cols - 13) if large else (1, 3, 8, st.cols - 4)
@@ -6164,12 +6163,12 @@ def messages_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
 
 # -- 9. Cracktro: a medal's season ---------------------------------------------------
 
-def cracktro_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0,
+def cracktro_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
                           season_number: int = 1, podium: list[tuple[str, str, int]] | None = None,
                           handle: str = "", placement: int = 1,
                           caption: str = "", sub: str = "") -> list[list[SplashOp]]:
     # A cracktro is played on the void, not the glass: its stars need black.
-    st = _Stage(p, width, height, seed, glass=False)
+    st = _Stage(p, width, height, seed, margin=margin, glass=False)
     rng, large = st.rng, st.large
     podium = podium or []
     logo = _splash_word(_SPLASH_FONT_SMALL, "WAR DIALER", 1, 2)
@@ -6248,7 +6247,7 @@ def outcome_scenes(p: Palette, player: Player | None, delta: ActionDelta, busted
     if busted and player is not None:
         seed = _scene_seed(player.handle, player.season_number, player.turns_used, "bust")
         composers.append(lambda: bust_scene_frames(
-            p, width, height, seed=seed, cash_before=player.cash - delta.cash, cash_after=player.cash,
+            p, width, height, margin=_MARGIN, seed=seed, cash_before=player.cash - delta.cash, cash_after=player.cash,
             crew_before=max(1, player.crew - delta.crew), crew_after=player.crew,
             caption="*** BUSTED *** Heat reset to 0", sub=headlines[-1] if headlines else ""))
     elif scene is not None:
@@ -6259,7 +6258,7 @@ def outcome_scenes(p: Palette, player: Player | None, delta: ActionDelta, busted
         if tier_index(after) > tier_index(before):
             seed = _scene_seed(player.handle, player.season_number, after, "tier")
             composers.append(lambda: tier_scene_frames(
-                p, width, height, seed=seed, handle=player.handle, old_tier=tier_name(before),
+                p, width, height, margin=_MARGIN, seed=seed, handle=player.handle, old_tier=tier_name(before),
                 new_tier=tier_name(after), rank=after,
                 caption=f"Promoted: {tier_name(after)}",
                 sub=f"Rank {after:,}, up from {tier_name(before)}"))
@@ -8267,7 +8266,7 @@ def do_operation(p: Palette, conn: sqlite3.Connection, player: Player, rng: rand
         lines = [name, f"Operation succeeded! Gross payout ${payout}; slot clear." if success else
                  f"Execution failed. Recovery payout ${payout}; casing retained. Prepare again before retrying."]
         scene = lambda: hack_scene_frames(
-            p, width, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "operation"),
+            p, width, height, margin=_MARGIN, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "operation"),
             handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
             payout=payout, crew_lost=max(0, -delta.crew), operation=True, caption=lines[1], sub=name)
     show_action_result(p, lines, delta, busted, width, height, player=player,
@@ -8445,7 +8444,7 @@ def do_job(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
     lines = [f"Job: {name} ({JOB_APPROACHES[choice.approach][0]})",
              f"Success! Gross payout ${payout}." if success else f"Job failed. Recovery payout ${payout}."]
     scene = lambda: hack_scene_frames(
-        p, w, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "job"),
+        p, w, height, margin=_MARGIN, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "job"),
         handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
         payout=payout, crew_lost=max(0, -delta.crew), caption=lines[1], sub=lines[0])
     show_action_result(p, lines, delta, busted, w, height, player=player, scene=scene, success=success)
@@ -8464,7 +8463,7 @@ def do_raid(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
     )
     headline = f"You hit {target.handle}; gross take ${amount}." if success else f"The raid on {target.handle} failed."
     scene = lambda: raid_scene_frames(
-        p, w, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "raid"),
+        p, w, height, margin=_MARGIN, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "raid"),
         handle=player.handle, target=target.handle, success=success, amount=amount, crew=player.crew,
         crew_lost=max(0, -delta.crew), caption=headline,
         sub=f"+{delta.rank} Rank" if success else f"{delta.crew:+} crew, {delta.cash:+,} cash")
@@ -8514,7 +8513,7 @@ def do_root_exchange(p: Palette, conn: sqlite3.Connection, player: Player, now: 
     if success:
         kinds[index] = "mine"
     scene = lambda: root_scene_frames(
-        p, w, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "root"),
+        p, w, height, margin=_MARGIN, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "root"),
         handle=player.handle, exchange_name=exchange.name, role=exchange.role,
         defender=None if defender == "free" else defender, kinds=kinds, index=index, success=success,
         caption=headline, sub=(f"+{delta.rank} Rank, ${exchange.income_per_hour}/hour" if success
@@ -8621,7 +8620,7 @@ def do_garrison(p: Palette, conn: sqlite3.Connection, player: Player, width: int
 
 def draw_season_change(p: Palette, season_number: int, width: int = 78, height: int = 24) -> None:
     play_scene(p, width, height, lambda: crackdown_scene_frames(
-        p, width, height, seed=_scene_seed(season_number, "crackdown"), season_number=season_number,
+        p, width, height, margin=_MARGIN, seed=_scene_seed(season_number, "crackdown"), season_number=season_number,
         caption=f"Fed crackdown: season {season_number} has started.",
         sub="Crews and exchanges have reset."))
     inner = _panel_width(p, max(1, width - 1))
