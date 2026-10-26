@@ -4569,9 +4569,11 @@ def phosphor_logo(mask: list[list[bool]], *, hot: float = 0.0, glow: bool = True
     halo, shade = mix(deep, (0, 0, 0), 0.62), mix(deep, (0, 0, 0), 0.72)
     # The outside of the letters, found by flooding in from the border: bloom
     # and shadow stay out of the counters, so an A, a D and an R keep their
-    # holes at every size.
+    # holes at every size. Every border cell seeds it: without the glow's
+    # padding the corner can be a lit pixel, and a flood seeded only there
+    # would find no outside at all -- and draw no shadow.
     outside = [[False] * W for _ in range(H)]
-    stack = [(0, 0)]
+    stack = [(y, x) for y in range(H) for x in range(W) if y in (0, H - 1) or x in (0, W - 1)]
     while stack:
         y, x = stack.pop()
         if not (0 <= y < H and 0 <= x < W) or outside[y][x] or on(y - pad_y, x - pad_x):

@@ -450,3 +450,18 @@ def test_a_meter_track_is_one_run():
     bar = wd.meter(_palette(), 30, 100, 18, climb=True)
     track = _ANSI_RE.sub("", bar).count(wd.gl("meter_off"))
     assert track > 1 and wd.gl("meter_off") * track in bar
+
+
+@pytest.mark.parametrize("word", [name.upper() for _threshold, name in wd.RANK_TIERS])
+def test_an_unglowing_wordmark_still_casts_its_shadow(word):
+    # Without the glow's padding the grid's corner is the glyph's own lit
+    # top-left pixel; the outside flood used to start only there, find nothing,
+    # and leave every tier-up wordmark without the shadow its grid reserved.
+    mask = wd.mask_from_rows(wd._tier_word(word))
+    art = wd.phosphor_logo(mask, glow=False)
+    shade = wd.mix(wd.TINTS["phosphor"][2], (0, 0, 0), 0.72)
+    shadow = {(y, x) for y, row in enumerate(art) for x, px in enumerate(row) if px == shade}
+    assert shadow
+    # Cast one pixel down and right of a lit pixel, never over a lit one.
+    for y, x in shadow:
+        assert mask[y - 1][x - 1] and not (y < len(mask) and x < len(mask[0]) and mask[y][x])
