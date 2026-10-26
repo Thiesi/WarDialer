@@ -3169,6 +3169,11 @@ def resolve_root_exchange(
                          f"{actor.handle} rooted your exchange, {exchange.name}! {counted(prior_garrison, 'defender')} returned to your available crew.", now)
         elif not success and prior_controller is not None:
             record_event(conn, prior_controller, actor.handle, f"{actor.handle} tried to root {exchange.name} and failed.", now)
+        # The caller's own receipt, without an actor for the reason the garrison
+        # receipt gives: a played Root turn always leaves its line on the feed.
+        record_event(conn, actor.user_id, None,
+                     f"Rooted {exchange.name}; garrison now {exchange.garrison}." if success
+                     else f"Tried to root {exchange.name}; its defenses held.", now, seen=True)
     return success, exchange.name, busted
 
 
@@ -3772,7 +3777,7 @@ def feed(p: Palette, events: list[GameEvent], width: int, *, limit: int = 6) -> 
                                max(8, width - _dlen(lead))).split("\r\n")
         tone = p.magenta if hostile else p.ink
         rows.append(bullet + " " + sty(p.grey, stamp) + " " + sty(tone, wrapped[0]))
-        rows.extend(" " * _dlen(lead) + sty(tone, line) for line in wrapped[1:])
+        rows.extend(Cont(" " * _dlen(lead) + sty(tone, line)) for line in wrapped[1:])
     return rows or [sty(p.grey, NO_EVENTS)]
 
 
@@ -3941,6 +3946,14 @@ def scanline(p: Palette, width: int, *, trailing: str = "") -> str:
     return "".join(out) + ("  " + trailing if trailing else "")
 
 
+class Cont(str):
+    """A card row that carries on the row above it, such as the wrapped tail of
+    a feed receipt; `paginate_cards` never starts a page with one it could
+    have kept with its head."""
+
+    __slots__ = ()
+
+
 def paginate_cards(blocks: list[tuple[str, list[str]]],
                    capacity: int) -> list[list[tuple[str, list[str]]]]:
     """Pack labelled cards onto pages of `capacity` rows inside the frame.
@@ -3951,7 +3964,9 @@ def paginate_cards(blocks: list[tuple[str, list[str]]],
     exactly the number of cards on the screen. The first card on a page is
     opened by the top border and is free unless it is labelled. A card too long
     for one page is continued with its heading repeated, rather than having its
-    tail orphaned under the next card's name.
+    tail orphaned under the next card's name. A `Cont` row stays on the page of
+    the row above it, so a wrapped receipt moves to the next page whole rather
+    than ending this one mid-sentence -- unless it is longer than a page.
     """
     capacity = max(1, capacity)
     pages: list[list[tuple[str, list[str]]]] = []
@@ -3969,6 +3984,16 @@ def paginate_cards(blocks: list[tuple[str, list[str]]],
                 page, used = [], 0
                 overhead = 1 if heading else 0
             room = max(1, capacity - used - overhead)
+            if room < len(rows):
+                cut = room
+                while cut and isinstance(rows[cut], Cont):
+                    cut -= 1
+                if cut:
+                    room = cut
+                elif page:
+                    pages.append(page)
+                    page, used = [], 0
+                    continue
             take, rows = rows[:room], rows[room:]
             if first or not heading:
                 shown = heading
@@ -6579,6 +6604,10 @@ def dashboard_cards(p: Palette, state: DashboardState, now: datetime,
         threshold, upcoming = RANK_TIERS[tier + 1]
         progress = meter(p, rank - RANK_TIERS[tier][0], max(1, threshold - RANK_TIERS[tier][0]), gauge)
         next_tier = sty(p.grey, "next ") + sty(p.cyan, _fit(upcoming, 16))
+        if tier and rank == RANK_TIERS[tier][0]:
+            # An empty bar on the very rank that earned a tier reads as no
+            # progress at all; say it is the new tier's first step instead.
+            next_tier = sty(p.phosphor + BOLD, "new tier") + " " + next_tier
     else:
         progress, next_tier = meter(p, 1, 1, gauge), sty(p.grey, "top tier")
     rank_row = compose([label_value(p, "rank", f"{rank:,}", style=p.mint) + " " + progress,
