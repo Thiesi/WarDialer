@@ -4881,3 +4881,55 @@ def test_trade_preview_quotes_the_tapered_range_and_says_why(tmp_path):
     assert "Gross payout: $20-$45" in tapered
     assert "Trade 6 of this turn-day" in tapered and "back to $60 when your turns refill" in tapered
     conn.close()
+
+
+@pytest.mark.parametrize("width", [80, 40])
+@pytest.mark.parametrize("recruited,fresh", [(9, False), (10, True), (11, False)])
+def test_rank_bar_on_a_tier_threshold_says_new_tier(tmp_path, width, recruited, fresh):
+    # Issue #22: rank 100 opens Wannabe with an empty bar, which read as no
+    # progress; the row names the fresh tier instead. A rank either side does not.
+    conn = wd.connect(tmp_path / "tier.db")
+    wd.ensure_schema(conn)
+    now = wd.now_utc()
+    wd.get_or_create_season_anchor(conn, now)
+    wd.ensure_exchanges_seeded(conn, 1, now)
+    wd.load_or_create_player(conn, 1, "Owner", now, 1)
+    conn.execute("UPDATE players SET crew_recruited_total=? WHERE user_id=1", (recruited,))
+    state = wd.dashboard_state(conn, 1, now)
+    written: list[str] = []
+    original_out, wd.out = wd.out, written.append
+    try:
+        wd.draw_dashboard(wd.Palette(False), state, now, width, 24)
+    finally:
+        wd.out = original_out
+    card = _screen_text(written)
+    assert f"rank {recruited * 10}" in card
+    assert ("new tier" in card) is fresh
+    assert ("next Script Kiddie" if recruited >= 10 else "next Wannabe") in card
+    conn.close()
+
+
+def test_page_break_keeps_a_wrapped_receipt_whole():
+    # Issue #22: a feed receipt wrapped over three rows used to end a page
+    # mid-sentence ("... Back on the") and finish under FEED (cont.).
+    head, tail = "receipt starts", [wd.Cont("  carries on"), wd.Cont("  and ends.")]
+    blocks = [("SCENE", ["a", "b", "c", "d"]), ("FEED", ["short one", head, *tail])]
+    pages = wd.paginate_cards(blocks, 8)
+    assert pages[0] == [("SCENE", ["a", "b", "c", "d"]), ("FEED", ["short one"])]
+    assert pages[1] == [("FEED (cont.)", [head, *tail])]
+    # A receipt that opens its card moves to the next page with its heading.
+    pages = wd.paginate_cards([("SCENE", ["a"] * 5), ("FEED", [head, *tail])], 8)
+    assert pages[0] == [("SCENE", ["a"] * 5)] and pages[1] == [("FEED", [head, *tail])]
+    # One longer than a page still splits rather than never fitting.
+    pages = wd.paginate_cards([("FEED", [head] + [wd.Cont("  more")] * 5)], 3)
+    assert [len(rows) for page in pages for _heading, rows in page] == [2, 2, 2]
+
+
+def test_feed_marks_only_the_wrapped_tail_of_a_receipt():
+    event = wd.GameEvent(id=1, actor_handle=None, created_at="2026-10-24T10:00:00+00:00", seen_at=None,
+                         summary_text="Fresh season 4: competitive resources reset. Back on the "
+                                      "switchboard, [I] Scene shows retained season results.")
+    rows = wd.feed(wd.Palette(False), [event, event], 36)
+    marks = [isinstance(row, wd.Cont) for row in rows]
+    half = len(rows) // 2
+    assert half > 1 and marks[:half] == marks[half:] == [False] + [True] * (half - 1)

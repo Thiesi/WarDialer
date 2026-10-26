@@ -474,6 +474,31 @@ def test_resolve_root_exchange_notifies_the_prior_controller(db_path):
     assert name in events[0].summary_text
 
 
+def test_resolve_root_exchange_leaves_the_rooting_crew_its_own_receipt(db_path):
+    # Issue #22: a played Root turn always shows on the caller's feed, already
+    # seen and with no actor, so it never reads as a rival's move.
+    now = wd.now_utc()
+    conn, season_number = _setup(db_path, now)
+    holder = wd.load_or_create_player(conn, 1, "holder", now, season_number)
+    holder.crew = 2
+    _save_fixture(conn, holder)
+    exchange = wd.list_exchanges(conn)[0]
+    assert wd.resolve_root_exchange(conn, holder, exchange.id, now, FixedRandom(0.99))[0] is True
+    challenger = wd.load_or_create_player(conn, 2, "challenger", now, season_number)
+    challenger.crew = 2
+    _save_fixture(conn, challenger)
+    assert wd.resolve_root_exchange(conn, challenger, exchange.id, now, FixedRandom(0.99))[0] is False
+
+    # Newest first: the rival's failed attempt, then the holder's own capture.
+    mine = wd.history_events(conn, holder.user_id)
+    assert [e.summary_text for e in mine] == [f"challenger tried to root {exchange.name} and failed.",
+                                              f"Rooted {exchange.name}; garrison now 1."]
+    assert mine[1].actor_handle is None and mine[1].seen_at is not None
+    theirs = wd.history_events(conn, challenger.user_id)
+    assert [e.summary_text for e in theirs] == [f"Tried to root {exchange.name}; its defenses held."]
+    assert theirs[0].actor_handle is None and theirs[0].seen_at is not None
+
+
 # -- concurrency: two independent connections racing the same target row --
 
 
