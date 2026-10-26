@@ -137,9 +137,10 @@ python tools/cp437_gallery.py --out build/cp437-gallery
 python scripts/war_dialer_balance.py --help
 ```
 
-The gallery drives the real door and renders its screens at 80/64/40 columns
-with the ANSI emulator in `tools/ansi_to_html.py`, including the launch splash
-on Windows pipes. Sockets use `select` and Windows pipes use `PeekNamedPipe`
+The gallery drives the real door and renders its screens at 132/80/64/40
+columns with the ANSI emulator in `tools/ansi_to_html.py`, including the launch
+splash on Windows pipes. 132x40 is the wide console: from 100 columns, screens
+are centred and up to 104 columns wide. Sockets use `select` and Windows pipes use `PeekNamedPipe`
 to leave typed-ahead keys untouched and skip the splash. A screen change
 needs visual review as well as layout tests.
 The CP437 gallery runs the complete encoding-test screen walk through the
@@ -158,6 +159,11 @@ and node-backup tests remain in NetBBS.
 Tags matching `v*` run the suite on Linux and Windows with Python 3.11 and
 3.13, then publish the tagged `war_dialer.py` byte-for-byte with `SHA256SUMS`.
 The release job waits for all four test combinations to pass.
+
+The presentation is designed for wide, truecolor, Unicode terminals and degrades
+through 256 and 16 colors, CP437 and ASCII (see the [design](docs/design.md),
+"Carrier Detect"). Pixel art uses quarter blocks; set `DOOR_PIXELS=half` for a
+font without them. NetBBS's `quadrants: false` does the same.
 
 The banner is drawn from the game's own launch splash by `art/render_banner.py`
 (`python art/render_banner.py war_dialer.py art/banner.png`).

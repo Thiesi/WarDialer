@@ -84,8 +84,9 @@ def test_a_long_wide_handle_and_node_name_are_fitted_not_wrapped():
 
 def test_it_animates_without_going_quiet_and_stays_small():
     frames = wd.splash_bytes(wd.splash_frames(_palette(), INFO, 3, 80, 24, seed=3))
-    # About two and a half seconds, a write in every frame.
-    assert 2.0 <= len(frames) * wd.SPLASH_FRAME_SECONDS <= 3.2
+    # Under four seconds, a write in every frame: the war-dial scan (#24)
+    # added a second to the two and a half the call and the masthead took.
+    assert 2.0 <= len(frames) * wd.SPLASH_FRAME_SECONDS <= 4.0
     assert all(frames[1:])
     assert sum(len(frame.encode()) for frame in frames) < 40_000
 

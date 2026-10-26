@@ -453,8 +453,8 @@ def test_unusable_world_has_readable_exit_without_replacement(tmp_path, future_s
 #: the double-line set an older screen used, are still recognised here, and a
 #: helper that stopped seeing a frame would silently return an empty string
 #: rather than fail, which is how this file's own assertions go quiet.
-_FRAME_EDGES = "┌└├┐┘┤┏┗┣┓┛┫╔╚╠+"
-_FRAME_FILL = set("━═─-=+| ┌┐└┘├┤┏┓┗┛┣┫")
+_FRAME_EDGES = "┌└├┐┘┤┏┗┣┓┛┫╔╚╠╭╰╮╯+"
+_FRAME_FILL = set("━═─-=+| ┌┐└┘├┤┏┓┗┛┣┫╭╮╰╯┬┴")
 
 
 def _rows(screen: str, *, keep_style: bool = False) -> list[str]:
@@ -3231,7 +3231,9 @@ def test_hotkeys_labels_values_and_the_frame_are_four_different_colors():
     # The four roles a caller has to tell apart on every screen.
     assert len({palette.amber, palette.grey, palette.ink, palette.phosphor}) == 4
     bar = wd.key_bar(palette, (("T", "Trade", "Trade"),), 40, 1)[0]
-    assert bar.startswith(palette.amber + wd.BOLD + "[T]")
+    # A keycap: amber and bold on its own plate (#24), never the label's mint.
+    assert bar.startswith(wd.keycap(palette, "T"))
+    assert palette.amber + wd.BOLD + "[T]" in bar
     assert _color_before(bar, "Trade") == palette.mint
     chip = wd.label_value(palette, "CASH", "$4,820", style=palette.amber)
     assert _color_before(chip, "CASH") == palette.grey
@@ -3399,7 +3401,8 @@ def test_the_switchboard_reads_at_a_glance_with_gauges_not_sentences(tmp_path, m
     # Gauges, pips, crew dots and the ring, all on the first page.
     assert wd.gl("meter_on") in first and wd.gl("meter_off") in first
     assert wd.gl("turn_on") in first and wd.gl("crew_on") in first
-    assert wd.gl("link_h") * 2 in first and wd.gl("mine") in first
+    # The switch ring, with the exchanges' names on it (#24).
+    assert wd.gl("mine") in first and "Uptown" in first
     assert _screen_titles(written).startswith("SWITCHBOARD")
     conn.close()
 
@@ -4561,8 +4564,10 @@ def test_the_door_adopts_the_timezone_from_its_drop_file(tmp_path, monkeypatch):
 
 def test_the_frame_is_light_box_drawing():
     """Heavy `━` shows gaps at the cell seams in many monospace fonts, so the
-    border read as a failed render rather than a box."""
-    assert {wd.gl(name) for name in ("tl", "tr", "bl", "br", "h", "v", "ml", "mr")} == set("┌┐└┘─│├┤")
+    border read as a failed render rather than a box. Its corners are arcs
+    since #24, the splash ring's own; CP437 squares them."""
+    assert {wd.gl(name) for name in ("tl", "tr", "bl", "br", "h", "v", "ml", "mr")} == set("╭╮╰╯─│├┤")
+    assert "╭╮╰╯".translate(wd._CP437_TRANSLATION) == "┌┐└┘"
 
 
 def test_the_scanline_is_not_the_frames_own_glyph():
