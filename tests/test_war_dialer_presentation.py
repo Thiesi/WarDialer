@@ -51,6 +51,10 @@ PROC_WAIT = 30
 # for to know the screen is drawn and the cursor is waiting. In one place because
 # it is presentation, and the presentation is rebuilt (issue #494).
 DIAL = "dial \u203a ".encode()
+# A picker, drawn to its end: its key line is the one row only a picker has, and
+# the `[B] Back` that closes its bar (as it closes every browsing screen) has to
+# be consumed too, or the next screen's wait for `[B] Back` finds this one's.
+PICKER = (b"pick [", b"[B] Back")
 
 
 def _plain_with_offsets(raw) -> tuple[bytes, list[int]]:
@@ -558,8 +562,13 @@ def _running_door(tmp_path, *, new_player=False, event=False):
         of bytes on the wire (issue #494). Matching therefore runs against the
         output with its SGR removed -- which is what a caller actually reads --
         while the raw bytes consumed are still tracked exactly, so a later
-        marker in the same chunk is never thrown away.
+        marker in the same chunk is never thrown away. A tuple is several
+        markers, waited for in order.
         """
+        if isinstance(marker, tuple):
+            for part in marker:
+                wait_for(part)
+            return
         deadline = time.monotonic() + PROC_WAIT
         while True:
             plain, offsets = _plain_with_offsets(pending)
@@ -655,7 +664,7 @@ def test_real_process_target_menu_does_not_select_arrow_or_paste(tmp_path, seque
     with _running_door(tmp_path) as (process, path, wait_for, send, output, reach, screen):
         wait_for(DIAL)
         send(b"x")
-        wait_for(b"Cancel")
+        wait_for(PICKER)
         send(sequence)
         time.sleep(0.25)
         send(b"q")
@@ -695,7 +704,7 @@ def test_real_process_disconnect_preserves_only_committed_actions(tmp_path, stag
                 wait_for(b"A new member joins")
             elif stage == "root":
                 send(b"x")
-                wait_for(b"Cancel")
+                wait_for(PICKER)
                 send(b"1")
                 wait_for(b"[A] Act [B] Back")
                 send(b"a")
@@ -808,7 +817,7 @@ def test_linux_console_function_key_never_leaks_an_action(tmp_path, stage):
             wait_for(DIAL)
             if stage == "target":
                 send(b"x")
-                wait_for(b"Cancel")
+                wait_for(PICKER)
         send(b"\x1b[[C")  # Linux-console F3, not Crew Recruit / exchange C.
         if stage in ("onboarding", "receipt"):
             wait_for(DIAL)
@@ -980,7 +989,7 @@ def _fragmented_x10_attempt(tmp_path, stage) -> bool:
             wait_for(DIAL)
             if stage == "target":
                 send(b"x")
-                wait_for(b"Cancel")
+                wait_for(PICKER)
         if not _send_fragmented_x10_report(send):
             return False
         if stage in ("onboarding", "receipt"):
@@ -1012,7 +1021,7 @@ def test_extended_x10_mouse_encoding_stops_without_spending_a_turn(tmp_path, sta
             wait_for(DIAL)
             if stage == "target":
                 send(b"x")
-                wait_for(b"Cancel")
+                wait_for(PICKER)
         send(b"\x1b[M \xc4\x80C")  # UTF-8 coordinate, then an ASCII coordinate.
         # Waited for, not read after the exit: the drain thread may not have
         # copied the door's last line yet when `wait` returns (issue #896).
@@ -1339,9 +1348,9 @@ def test_real_process_garrison_preview_cancel_and_disconnect_preserve_assignment
         wd.resolve_root_exchange(conn, actor, 1, wd.now_utc(), __import__("random").Random(1))
         conn.close()
         send(b"g")
-        wait_for(b"[B] Back [Q] Cancel")
+        wait_for(PICKER)
         send(b"1")
-        wait_for(b"[B] Back [Q] Cancel")
+        wait_for(PICKER)
         send(b"1")
         wait_for(b"[A] Act [B] Back")
         if disconnect:
@@ -1411,12 +1420,12 @@ def test_real_process_preview_cancel_or_disconnect_spends_nothing(tmp_path, key,
         wait_for(DIAL)
         send(key)
         if key == b"x":
-            wait_for(b"Cancel")
+            wait_for(PICKER)
             send(b"1")
         if key == b"j":
-            wait_for(b"Cancel")
+            wait_for(PICKER)
             send(b"1")
-            wait_for(b"Cancel")
+            wait_for(PICKER)
             send(b"1")
         wait_for(b"[A] Act [B] Back")
         assert b"Cost: 1 turn" in _plain(output)
@@ -1857,10 +1866,10 @@ def test_real_process_disconnect_from_contract_picker_spends_nothing(tmp_path, s
     with _running_door(tmp_path) as (process, path, wait_for, send, output, reach, screen):
         wait_for(DIAL)
         send(b'j')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         if stage == 'approach':
             send(b'1')
-            wait_for(b'Cancel')
+            wait_for(PICKER)
         process.stdin.close()
         assert process.wait(timeout=PROC_WAIT) == 0
         assert process.stderr.read() == b''
@@ -1943,7 +1952,7 @@ def test_real_process_crew_disconnect_boundaries(tmp_path, stage):
     with _running_door(tmp_path) as (process, path, wait_for, send, output, reach, screen):
         wait_for(DIAL)
         send(b's')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         if stage != 'board':
             send(b'1')
             reach(b'[A] Act')
@@ -2054,7 +2063,7 @@ def test_real_process_recon_operation_disconnect_boundaries(tmp_path, keys, mark
             elif keys[index + 1] == b'a':
                 reach(b'[A] Act')
             else:
-                wait_for(b'Cancel')
+                wait_for(PICKER)
         process.stdin.close()
         assert process.wait(timeout=PROC_WAIT) == 0
         assert process.stderr.read() == b''
@@ -2186,9 +2195,9 @@ def test_real_process_owner_service_cancel_or_commit(tmp_path, commit):
         service_key = wd.PICK_KEYS[len(wd.garrison_options(actor, exchange))].encode()
         conn.close()
         send(b'g')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         send(b'1')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         send(service_key)
         reach(b'[A] Act')
         send(b'a' if commit else b'b')
@@ -2328,7 +2337,7 @@ def test_real_process_neutral_capture_preview_boundaries(tmp_path, stage):
         wait_for(DIAL)
         send(b'x')
         for _ in range(10):
-            wait_for(b'Cancel')
+            wait_for(PICKER)
             # The digit has to be in the hint, not only in an entry's marker:
             # an entry whose last row is on the next page is not selectable.
             if b'[5]' in screen().split(b'pick ')[-1]: break
@@ -2430,11 +2439,11 @@ def test_real_process_scene_disconnect_preserves_only_selected_insignia(tmp_path
     with _running_door(tmp_path) as (process, path, wait_for, send, output, reach, screen):
         wait_for(DIAL)
         send(b'i')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         assert b'BBS SCENE' in output
         if stage != 'scene':
             send(b'1')
-            wait_for(b'Cancel')
+            wait_for(PICKER)
             send(b'4')
             reach(b'[A] Act')
         if stage == 'committed':
@@ -2820,14 +2829,14 @@ def test_real_process_display_disconnect_preserves_only_chosen_toggle(tmp_path, 
         wait_for(DIAL)
         send(b'i')
         for _ in range(10):
-            wait_for(b'Cancel')
+            wait_for(PICKER)
             # The digit has to be in the hint, not only in an entry's marker:
             # an entry whose last row is on the next page is not selectable.
             if b'[7]' in screen().split(b'pick ')[-1]: break
             send(b'n')
         else: pytest.fail('Display entry was not reachable')
         send(b'7')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         assert b'DISPLAY' in output
         if toggle:
             send(b'1')
@@ -2908,9 +2917,9 @@ def test_real_process_operation_and_recon_disconnect_at_final_act(tmp_path, acti
         before = wd.read_player(conn, 0)
         conn.close()
         send(b'o')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         send(b'2' if action == 'recon' else b'1')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         send(b'2' if action == 'abandon' else b'1')
         reach(b'[A] Act')
         if commit:
@@ -2950,9 +2959,9 @@ def test_real_process_every_owner_service_disconnect_preserves_commit_boundary(t
         service_key = wd.PICK_KEYS[len(wd.garrison_options(actor, exchange))].encode()
         conn.close()
         send(b'g')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         send(b'1')
-        wait_for(b'Cancel')
+        wait_for(PICKER)
         send(service_key)
         reach(b'[A] Act')
         if commit:
@@ -4780,7 +4789,8 @@ def test_one_page_picker_offers_no_page_turn(monkeypatch):
     monkeypatch.setattr(wd, "read_menu_choice", lambda valid: "B")
     wd.pick_record_page(wd.Palette(False), "ROOT EXCHANGE", [(["Only one"], True)], 80, 24)
     assert "N" not in _bar_keys(written) and "P" not in _bar_keys(written)
-    assert {"1", "B", "Q"} <= set(re.findall(r"\[(\w)\]", _last_screen(written)))
+    shown = set(re.findall(r"\[(\w)\]", _last_screen(written)))
+    assert {"1", "B"} <= shown and "Q" not in shown
 
 
 def test_an_empty_feed_says_nothing_has_happened_to_you():
@@ -4948,3 +4958,14 @@ def test_feed_lights_the_keys_its_own_receipts_point_at():
     # A rival's handle is the rival's text, not a key.
     assert wd.keycap(palette, "A") not in "".join(rows[raided:])
     assert _color_before(rows[raided], "[A]ce") == palette.magenta
+
+
+def test_a_picker_offers_back_alone_and_still_hears_q(monkeypatch):
+    # [Q] Cancel was a second label for [B] Back; Q itself stays a way out.
+    written = []
+    monkeypatch.setattr(wd, "out", written.append)
+    monkeypatch.setattr(wd, "read_input_key", lambda *args, **kwargs: "q")
+    records = [(["Kilobaud", "A rival crew."], True)]
+    assert wd.pick_record_page(wd.Palette(True), "RIVALS", records, 80, 24) == "Q"
+    screen = _screen_text(written)
+    assert "[B] Back" in screen and "Cancel" not in screen and "[Q]" not in screen
