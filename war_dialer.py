@@ -4039,8 +4039,10 @@ TEXT_BAR = (("N", "Next", "Next"), ("P", "Prev", "Prev"), ("B", "Back", "Back"))
 ACCEPT_BAR = (("A", "Act", "Act"), ("B", "Back", "Back"))
 
 
-PICK_BAR = (("N", "Next", "Next"), ("P", "Prev", "Prev"), ("B", "Back", "Back"),
-            ("Q", "Cancel", "Cxl"))
+#: `Q` leaves a picker too, unadvertised, as it leaves every browsing screen:
+#: a caller whose fingers know `[Q] Quit` from the switchboard is backed out,
+#: not ignored. Shown as `[Q] Cancel`, it was a second key for `[B] Back`.
+PICK_BAR = (("N", "Next", "Next"), ("P", "Prev", "Prev"), ("B", "Back", "Back"))
 
 
 LOG_BAR = (("N", "Next", "Next"), ("P", "Prev", "Prev"), ("A", "Ack page", "Ack"),
@@ -8542,7 +8544,7 @@ def do_root_exchange(p: Palette, conn: sqlite3.Connection, player: Player, now: 
     # not targets: a capture price, root Heat and odds against your own garrison
     # describe an action this picker will not even offer.
     # Named with the screen it lives on, like every other borrowed key in the
-    # door: this picker's reader takes Next/Prev/Back/Cancel and the selectable
+    # door: this picker's reader takes Next/Prev/Back (and Q) and the selectable
     # digits, so a bare `[G]` here would be a key that does nothing.
     rendered = [((garrison_entry_rows(p, exchange, player, inner - 4)
                   + prose_rows(p, "Already yours. Back, then [G] Garrison on the "
