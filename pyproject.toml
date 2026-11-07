@@ -2,4 +2,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# Keep only failed tests' temp dirs, from the last run only (local disk hygiene).
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
 markers = ["timing_sensitive: input timing windows; run serially after the parallel suite"]

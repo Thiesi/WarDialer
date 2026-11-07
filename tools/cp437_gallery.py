@@ -73,7 +73,7 @@ def main():
     parser.add_argument("--out", type=Path, default=ROOT / "build/cp437-gallery")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="cp437-gallery-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="wardialer-cp437-gallery-") as temporary:
         for width, height in ((40, 12), (64, 20), (80, 24)):
             screens = render(width, height, Path(temporary))
             (args.out / f"all-{width}.html").write_text(

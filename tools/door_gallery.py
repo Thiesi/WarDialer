@@ -1017,7 +1017,7 @@ def base_fixture(door_name: str, door: pathlib.Path, root_dir: pathlib.Path,
         return fixture
     remove(fixture)
     build = FIXTURE_BUILDERS.get((door_name, name), _onboard)
-    staging = pathlib.Path(tempfile.mkdtemp(prefix="gallery-fixture-"))
+    staging = pathlib.Path(tempfile.mkdtemp(prefix="wardialer-gallery-fixture-"))
     try:
         state = staging / "state"
         build(door_name, door, state)
@@ -1109,7 +1109,7 @@ def build(door_name: str, widths: list[int], heights: dict[int, int],
              if keys != b"~" or preset in SPLASH_PRESETS.get(door_name, ())
              for width in widths]
 
-    run_dir = pathlib.Path(tempfile.mkdtemp(prefix="gallery-run-"))
+    run_dir = pathlib.Path(tempfile.mkdtemp(prefix="wardialer-gallery-run-"))
 
     def shoot(shot) -> list[str]:
         label, keys, _, extra, width, height, fixture = shot

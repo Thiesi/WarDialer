@@ -87,7 +87,7 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
     daily = []
     recovery_turn = None
     fixture = None
-    with tempfile.TemporaryDirectory(prefix="netbbs-war-balance-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="wardialer-balance-") as temporary:
         conn = wd.connect(Path(temporary) / "world.db")
         try:
             wd.ensure_schema(conn)

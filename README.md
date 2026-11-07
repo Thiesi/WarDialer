@@ -154,6 +154,33 @@ documents refer to NetBBS issues; imported commit messages qualify those
 references as `Thiesi/NetBBS#N`. Host runtime, resize, administration-wrapper
 and node-backup tests remain in NetBBS.
 
+### Local disk hygiene
+
+Unbounded test scratch once took this development host down: several
+million files in a sibling project's worktrees, then half a million in the
+system temp folder. These rules keep this checkout's scratch bounded:
+
+- Run `pytest` without `--basetemp`. It then uses the system temp folder and
+  keeps only failed tests' directories from the last run. A sandbox that can
+  write only inside the worktree uses exactly `--basetemp=.test-tmp/pytest`,
+  which every run replaces. The suite refuses any other `--basetemp` inside
+  the worktree, so no more `build/pytest-<name>` per run.
+- **The temp folder is not storage.** Tools create their temp folders with
+  the `wardialer-` prefix and remove them when done. Galleries write to one
+  fixed folder under `build/` each. Evidence worth keeping goes in `docs/`
+  or on the PR, never only in a temp path.
+- The suite refuses to start when `.test-tmp`, `.pytest_cache` and `build`
+  hold more than 50,000 files, or when the `wardialer-*` entries in the temp
+  folder do (`WARDIALER_SCRATCH_LIMIT` raises it for one run).
+  `python scripts/clean_scratch.py` removes the worktree's scratch
+  (`.test-tmp`, `.pytest_cache`, `build/pytest-*`, `__pycache__`; never
+  `.venv`, tracked files or the rest of `build/`). `--temp` removes stale
+  `wardialer-*` temp entries, and `--report` counts files per worktree.
+- One worktree per active branch, removed with `git worktree remove` when
+  its PR merges. Run full suites one at a time, never two at once, and
+  never kill processes you did not start.
+- Keep the checkout outside OneDrive and other synced folders.
+
 ## Releases
 
 Tags matching `v*` run the suite on Linux and Windows with Python 3.11 and
