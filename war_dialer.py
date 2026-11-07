@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""
+"""War Dialer for NetBBS and classic BBSes. Copyright (c) 2026 Thiesi. BSD-2-Clause.
+
 War Dialer -- an asynchronous, play-by-post multiplayer BBS door
 (originally NetBBS issue #200; design recorded in `docs/design.md`).
 Rival 80s/90s BBS-scene hacker/phreaker crews
