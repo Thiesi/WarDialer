@@ -354,6 +354,45 @@ and `line_banked` (the open line: what the hack was worth, how many digs have
 held, and the Rank they carry), and `operation_lead` (the carrier an operation
 has cased). Nobody starts with a line open or a carrier cased.
 
+## A season with a shape
+
+Measured play goes flat late: a caller's twentieth day read like their fifth,
+with eight line conditions and nineteen carrier systems that repeated inside
+a week. None of this changes saved data.
+
+**Sixteen daily conditions.** Eight more join the first eight. Five are new
+combinations of the existing effects, each a bonus with a cost: Payday (Trades
++$10, hack payouts +10%), Cold Snap (Heat gains 3 lower, payouts 10% lower),
+Double Shift (sweeps find +1, Heat gains +1), Land Rush (captures $25 cheaper,
+Heat gains +2) and Headlines (clean hacks +10 Rank, Heat gains +4). Three
+carry new effects: Dead Air makes a dig's trace 10 points rarer, Quiet Night
+makes a Trade cool 3 more Heat, and Default Passwords adds 5 points to the
+odds of every hack. A condition may cost something, but never without giving
+something, and the suite holds that for every one.
+
+**Acts.** Five days of every season are not drawn. Day 2 is Land Grab
+(captures $20 cheaper, recruits $15 cheaper) and the middle day is Halftime
+(sweeps find +1, clean hacks +5 Rank). The last three days climb into the
+crackdown: Last Call (hack payouts +50%, Heat gains +3), All In (clean hacks
++15 Rank, Heat gains +5) and Crackdown Eve (clean hacks +25 Rank, double
+payouts, Heat gains +8). The finish is where a season's standings can still
+move, and it is the hottest the wire gets, so the Rank on offer has to be
+gambled for. The switchboard lights those three days in the alarm color.
+
+**One place for a hack's odds.** A contract's, a carrier's and an
+operation's chance now come from one function, so the board's gauge, the
+preview's figure and the roll itself cannot disagree, and a condition that
+moves them moves all three.
+
+**Fifty-seven carrier systems.** Thirty-eight more, across the four tiers,
+each with its own greeting. They are appended and never reordered, because a
+black book stores a system by its place in the list.
+
+With conditions switched on, three weeks over eight seeds moved the careful,
+Heat-riding and digging policies' average Rank by +8%, -3% and +5%: the wider
+pool varies the days without unbalancing them. The probe cannot reach the last
+three days (it stops at twenty-one), so the finale's stakes are unmeasured.
+
 ## Measuring play
 
 Rules are changed against measurements, and two kinds exist.
