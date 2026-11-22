@@ -326,19 +326,28 @@ points of odds. A strike back hands none in return, so a feud is one exchange
 and not a loop. The window is read off the shield the raid left, so it needs
 no stored state.
 
-With all four in, twenty-one days over four seeds:
+With all four in, twenty-one days over twelve seeds:
 
-| Policy | Rank | Busts | Crew at the end |
-| --- | --- | --- | --- |
-| `dialer`, careful | 3,100-3,415 | 0 | 71-80 |
-| `rider`, spends Heat to the line | 3,675-4,160 | 0 | 35-54 |
-| `digger`, also takes the first two digs while they fit | 4,371-5,242 | 0 | 64-82 |
-| `gambler`, digs every line out whatever the Heat | 3,505-4,829 | 6-10 | 14-37 |
-| `greedy`, ignores Heat on the hacks themselves | 2,455-2,805 | 19-24 | 1-3 |
+| Policy | Average Rank | Range | Busts | Crew at the end |
+| --- | --- | --- | --- | --- |
+| `dialer`, careful | 3,337 | 3,080-3,600 | 0 | 64-83 |
+| `rider`, spends Heat to the line | 3,966 | 3,340-4,425 | 0 | 33-65 |
+| `digger`, also takes the first two digs while they fit | 4,304 | 3,425-5,242 | 0-2 | 40-82 |
+| `gambler`, digs every line out whatever the Heat | 4,336 | 3,505-4,970 | 3-13 | 14-67 |
+| `greedy`, ignores Heat on the hacks themselves | 2,551 | 1,770-2,955 | 19-28 | 1-3 |
 
-The best play now includes real gambles: the digger loses what it carries on
-about three digs in ten. Digging every line out is competitive but swings
-widely and wrecks the crew, and ignoring Heat outright is still the worst.
+On average the digger finishes about a tenth ahead of the rider, and its
+finishes spread nearly twice as wide: it loses what it carries on about three
+digs in ten. So the best play now includes real gambles, without being far
+ahead of the play that takes none. Digging every line out averages the same
+as digging two and costs busts and crew for it. Ignoring Heat outright is
+still the worst.
+
+These are averages. One seed is one caller's luck, and on a single seed any
+of the top three can finish ahead of the other two; the first figures for
+this section came from four seeds and put the digger a fifth ahead, which
+twelve do not bear out. The suite compares the profiles on their averages
+over six seeds for the same reason.
 
 **Schema 13** adds four player columns, all zero: `line_rank`, `line_depth`
 and `line_banked` (the open line: what the hack was worth, how many digs have
