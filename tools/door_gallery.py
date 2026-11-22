@@ -172,6 +172,8 @@ WALKS: dict[str, list[tuple[str, bytes]]] = {
         # The last hub entry is the caller's own display screen; no other walk
         # opens it.
         ("Display options", b"I7?"),
+        # The one record a season does not take: the counts and the badge wall.
+        ("Rap sheet", b"I8?N%"),
         ("The scene", b"E"),
         # A digit on the scene screen is the exchange's own number, so it opens
         # that exchange's card wherever the table has been paged to. Exchange 1
@@ -197,6 +199,15 @@ WALKS: dict[str, list[tuple[str, bytes]]] = {
         # waited for a screen that never came. `P*` then returns to page one.
         ("Switchboard, nothing yet", b"N*P*N%"),
         ("Log, nothing yet", b"N*H"),
+        # The war dialer is two screens in one: the black book and the sweep
+        # that fills it. An empty book and one with numbers in it read
+        # differently, and a carrier goes cold in three days -- which rules it
+        # out of the cached fixture -- so the sweep is played in SETUP.
+        ("War dialer, an empty book", b"D"),
+        ("War dialer", b"D"),
+        ("Sweep preview", b"DSN%"),
+        # Which carrier a sweep turns up is the sweep's business, hence `#`.
+        ("Carrier preview", b"D#N%"),
         ("Contract board", b"J"),
         # An action's preview is two pickers deep: the board, the approach, and
         # only then the terms the player is actually asked to accept. Each of the
@@ -355,6 +366,7 @@ SEED = {"war_dialer": seed_war_dialer}
 # casing receipt is a single page, so one Enter dismisses it and the next sequence
 # starts on the switchboard rather than spending its first key on the receipt.
 CASE_AN_OPERATION = b"O1?1?1?" + b"N*" + b"A"   # contract, approach, preview, Act
+SWEEP_A_PREFIX = b"DS" + b"N*" + b"A"           # the dialer, its sweep, preview, Act
 PREPARE_IT = b"\r" + b"O1?1?" + b"N*" + b"A"    # continue the saved one, preview, Act
 # Walks that want a world nobody has played, rather than the cached fixture: the
 # first-visit guide exists only before there is a career, and `base_fixture` was
@@ -430,6 +442,9 @@ SETUP: dict[str, dict[str, bytes]] = {
         "Owner service preview, a Public PBX": b"X{Gulf}" + b"N*" + b"A",
         # Buy the recon whose dossier the next walk reads.
         "Your dossiers, a snapshot": b"O2?#" + b"N*" + b"A",
+        # Sweep for the carriers the next two walks read and hack.
+        "War dialer": SWEEP_A_PREFIX,
+        "Carrier preview": SWEEP_A_PREFIX,
         "Active operation": CASE_AN_OPERATION,
         "Prepare preview": CASE_AN_OPERATION,
         "Abandon preview": CASE_AN_OPERATION,
@@ -469,6 +484,7 @@ SHOWS: dict[str, dict[str, str]] = {
         "Your season reports": "YOUR SEASON REPORTS",
         "Hall of Fame": "HALL OF FAME",
         "Display options": "DISPLAY",
+        "Rap sheet": "RAP SHEET",
         "The scene": "THE SCENE",
         "Exchange card": "DEFENCE",
         "Exchange card, a target": "YOUR ODDS",
@@ -479,6 +495,12 @@ SHOWS: dict[str, dict[str, str]] = {
         "Log": "EVENT LOG",
         "Switchboard, nothing yet": "Nothing has happened",
         "Log, nothing yet": "Nothing has happened",
+        "War dialer, an empty book": "No numbers yet",
+        # Every carrier's number sits in the fictional 555-01 block, at every
+        # width; the BLACK BOOK heading is the first thing a small page gives up.
+        "War dialer": "-555-01",
+        "Sweep preview": "SWEEP PREVIEW",
+        "Carrier preview": "CARRIER PREVIEW",
         "Contract board": "CONTRACT BOARD",
         "Choose approach": "CHOOSE APPROACH",
         "Job preview": "JOB PREVIEW",

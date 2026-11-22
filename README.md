@@ -6,6 +6,13 @@ An asynchronous multiplayer door game for BBSes: rival crews compete for ten
 phone exchanges across a season, in one shared world that every caller on the
 board plays.
 
+A caller gets fifteen turns a day. They sweep phone prefixes for carriers and
+hack what answers, run contracts and multi-step operations, root exchanges
+that pay by the hour, raid rival crews, and upgrade their modem, all under
+Heat, the federal attention that ends in a bust. The wire changes daily, the
+neutral operators take back a home that is under-defended, and every four
+weeks a crackdown resets the scene. Medals and each caller's rap sheet stay.
+
 War Dialer is one Python file, `war_dialer.py`, with no dependencies beyond
 Python 3.11's standard library. It needs a terminal of at least 40 columns by
 12 rows. Every caller on one BBS shares one SQLite world.
@@ -202,6 +209,10 @@ The presentation is designed for wide, truecolor, Unicode terminals and degrades
 through 256 and 16 colors, CP437 and ASCII (see the [design](docs/design.md),
 "Carrier Detect"). Pixel art uses quarter blocks; set `DOOR_PIXELS=half` for a
 font without them. NetBBS's `quadrants: false` does the same.
+
+Each day of a season has a line condition, a bonus or a trade that applies to
+every caller (the [design](docs/design.md), "The overhaul"). Set `DOOR_LINES=0`
+in the door's environment for a clear wire every day.
 
 The banner is drawn from the game's own launch splash by `art/render_banner.py`
 (`python art/render_banner.py war_dialer.py art/banner.png`).

@@ -60,6 +60,14 @@ def _save_fixture(conn, player):
     )
 
 
+def _drop_carrier_schema(conn):
+    """Undo schema 12 (war dialing, rigs, the rap sheet) for a downgrade fixture."""
+    conn.execute("DROP TABLE career")
+    conn.execute("DROP TABLE leads")
+    conn.execute("ALTER TABLE players DROP COLUMN bonus_rank")
+    conn.execute("ALTER TABLE players DROP COLUMN rig")
+
+
 class FixedRandom:
     """A stand-in for `random.Random` with fully deterministic output --
     real Random's `.random()` sequence is fine for flavor but useless
@@ -1391,7 +1399,7 @@ def _legacy_income_world(db_path):
     old_schema = schema.replace(addition, "")
     values = asdict(a)
     values.pop("income_remainder")
-    for column in wd._ECONOMY_COLUMNS | wd._OPERATION_COLUMNS | {"raid_shield_until", "specialty", "support", "insignia", "turns_trading"}:
+    for column in wd._ECONOMY_COLUMNS | wd._OPERATION_COLUMNS | {"raid_shield_until", "specialty", "support", "insignia", "turns_trading", "rig", "bonus_rank"}:
         values.pop(column)
     conn.execute("DROP TABLE players")
     conn.execute(old_schema)
@@ -2395,6 +2403,7 @@ def _downgrade_operations_fixture(conn):
     conn.execute("DROP TABLE season_results")
     conn.execute("DROP TABLE seasons")
     conn.execute("ALTER TABLE players DROP COLUMN turns_trading")
+    _drop_carrier_schema(conn)
     conn.execute("ALTER TABLE players DROP COLUMN insignia")
     conn.execute("DROP TABLE scene")
     conn.execute("ALTER TABLE exchanges DROP COLUMN npc_key")
@@ -2679,6 +2688,7 @@ def test_exchange_role_upgrade_preserves_world_and_rolls_back_version_failure(db
     conn.execute('ALTER TABLE exchanges DROP COLUMN npc_return_at')
     conn.execute('ALTER TABLE exchanges DROP COLUMN role')
     conn.execute('ALTER TABLE players DROP COLUMN turns_trading')
+    _drop_carrier_schema(conn)
     conn.execute('PRAGMA user_version=6')
     before = list(conn.iterdump())
     original = [tuple(row) for row in conn.execute('SELECT * FROM exchanges')]
@@ -2775,9 +2785,12 @@ def test_neutral_return_deadline_survives_restart_and_rejects_stale_unclaimed_pr
     conn.close()
 
 
-def test_neutrals_never_take_human_homes_and_reset_repopulates_only_home_sites(db_path):
+def test_neutrals_never_take_a_matched_home_and_reset_repopulates_only_home_sites(db_path):
     conn, now, actor, _ = _rivals(db_path)
     wd.resolve_root_exchange(conn, actor, 5, now, FixedRandom())
+    # A defence equal to the operator's crew of two is never tested; a weaker
+    # one is, once a day (tests/test_war_dialer_dialing.py).
+    conn.execute("UPDATE exchanges SET garrison=2 WHERE id=5")
     wd.settle_world(conn, now + timedelta(days=20))
     target = wd.list_exchanges(conn)[4]
     assert target.controller_user_id == 1 and target.npc_key == ''
@@ -2799,6 +2812,7 @@ def test_neutral_upgrade_preserves_human_ownership_and_rolls_back_marker_failure
     conn.execute('ALTER TABLE exchanges DROP COLUMN npc_key')
     conn.execute('ALTER TABLE exchanges DROP COLUMN npc_return_at')
     conn.execute('ALTER TABLE players DROP COLUMN turns_trading')
+    _drop_carrier_schema(conn)
     conn.execute('PRAGMA user_version=7')
     before = list(conn.iterdump())
     def deny_version(action, name, value, *args):
@@ -2915,6 +2929,7 @@ def test_scene_upgrade_is_atomic_and_does_not_invent_old_bulletins(db_path):
     conn.execute('ALTER TABLE players DROP COLUMN insignia')
     conn.execute('DROP TABLE scene')
     conn.execute('ALTER TABLE players DROP COLUMN turns_trading')
+    _drop_carrier_schema(conn)
     conn.execute('PRAGMA user_version=8')
     before = list(conn.iterdump())
     def deny_version(action, name, value, *args):
@@ -2969,7 +2984,10 @@ def test_crackdown_receipts_include_dormant_results_once_and_remain_private(db_p
     conn.execute('UPDATE players SET crew_recruited_total=10 WHERE user_id=1')
     _give_exchange(conn, 2, now)
     wd.settle_world(conn, now + wd.SEASON)
-    rows = conn.execute('SELECT target_user_id,summary_text,created_at,seen_at FROM events ORDER BY target_user_id').fetchall()
+    # Each medallist also gets a PODIUM badge receipt, read already; the
+    # crackdown receipts are the unread ones.
+    rows = conn.execute("SELECT target_user_id,summary_text,created_at,seen_at FROM events "
+                        "WHERE summary_text NOT LIKE 'Badge earned:%' ORDER BY target_user_id").fetchall()
     assert len(rows) == 2
     assert 'Final Rank 100; place 2/2; Silver' in rows[0]['summary_text']
     assert 'Final Rank 112; place 1/2; Gold' in rows[1]['summary_text']
@@ -2978,7 +2996,9 @@ def test_crackdown_receipts_include_dormant_results_once_and_remain_private(db_p
     conn.close()
     conn = wd.connect(db_path)
     wd.settle_world(conn, now + wd.SEASON + wd.DAY)
-    assert conn.execute('SELECT COUNT(*) FROM events').fetchone()[0] == 2
+    assert conn.execute('SELECT COUNT(*) FROM events').fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE summary_text LIKE 'Badge earned: PODIUM%' "
+                        "AND seen_at IS NOT NULL").fetchone()[0] == 2
     conn.close()
 
 
@@ -3043,6 +3063,7 @@ def test_archive_schema_upgrade_is_atomic_and_does_not_backfill_unknown_history(
     conn.execute('DROP TABLE season_results')
     conn.execute('DROP TABLE seasons')
     conn.execute('ALTER TABLE players DROP COLUMN turns_trading')
+    _drop_carrier_schema(conn)
     conn.execute('PRAGMA user_version=9')
     before = list(conn.iterdump())
     def deny_version(action, name, value, *args):
@@ -3115,6 +3136,7 @@ def test_trade_count_upgrade_is_atomic_and_starts_everyone_at_zero(db_path):
     conn, now, actor, _ = _rivals(db_path)
     wd.resolve_trade_warez(conn, actor, now, FixedRandom())
     conn.execute('ALTER TABLE players DROP COLUMN turns_trading')
+    _drop_carrier_schema(conn)
     conn.execute('PRAGMA user_version=10')
     before = list(conn.iterdump())
 
@@ -3127,7 +3149,7 @@ def test_trade_count_upgrade_is_atomic_and_starts_everyone_at_zero(db_path):
     conn.set_authorizer(None)
     assert list(conn.iterdump()) == before
     wd.ensure_schema(conn)
-    assert conn.execute('PRAGMA user_version').fetchone()[0] == 11
+    assert conn.execute('PRAGMA user_version').fetchone()[0] == wd.WORLD_SCHEMA_VERSION
     upgraded = wd.read_player(conn, actor.user_id)
     assert upgraded.turns_trading == 0 and upgraded.turns_used == 1 and upgraded.cash == actor.cash
     before = list(conn.iterdump())
