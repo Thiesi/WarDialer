@@ -244,7 +244,8 @@ def test_the_wide_switchboard_fits_on_one_page_given_the_rows(tmp_path, monkeypa
         assert fact in text, fact
     if most == 1:
         titles = _screen_titles(written)
-        for heading in ("CREW", "THE SCENE", "FEED", "ORDERS", "SEASON"):
+        # TODAY is the advice card; ORDERS follows only when it has detail to add.
+        for heading in ("TODAY", "CREW", "THE SCENE", "FEED", "SEASON"):
             assert heading in titles, heading
     conn.close()
 

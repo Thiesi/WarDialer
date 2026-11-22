@@ -76,3 +76,21 @@ def test_mixed_visit_uses_paid_development_operations_and_all_fifteen_turns():
     assert all(day['players']['1']['turns_spent'] == (day['day'] + 1) * 15 for day in result['daily'])
     assert all(day['players']['1']['cash'] >= 0 for day in result['daily'])
     assert result['daily'][0]['players']['1']['specialty'] == 'phreakers'
+
+
+def test_dialer_sweeps_hacks_and_buys_a_rig_within_the_allowance():
+    result = balance.run_scenario('dialer', days=6)
+    assert not result['rejections']
+    actions = result['actions']['1']
+    assert all(actions[name] > 0 for name in ('sweep', 'carrier', 'rig', 'recruit'))
+    assert actions['carriers_found'] >= actions['sweep']         # a sweep always finds one
+    assert 0 < actions['carrier_successes'] <= actions['carrier']
+    assert all(day['players']['1']['turns_spent'] == (day['day'] + 1) * 15 for day in result['daily'])
+    last = result['daily'][-1]['players']['1']
+    assert last['rig'] >= 1 and last['bonus_rank'] > 0 and last['cash'] >= 0
+
+
+def test_the_probes_measure_the_plain_rules():
+    """A line condition would change a payout with the date the probe ran on."""
+    assert balance.os.environ["DOOR_LINES"] == "0"
+    assert balance.wd.lines_switched_off()

@@ -85,6 +85,7 @@ from contextlib import closing, contextmanager, nullcontext, ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import ClassVar
 
 ESC = "\x1b"
 RESET = f"{ESC}[0m"
@@ -1233,6 +1234,14 @@ BUST_CASH_LOSS_FRACTION = 0.25
 BUST_CREW_LOSS_FRACTION = 0.20
 
 RECRUIT_COST = 75
+# A crew past RECRUIT_FLAT_CREW living members pays RECRUIT_STEP more for each
+# one it already has. At a flat price the twenty-one-day probes recruited 160
+# to 180 times: crew was the only stat, cash had nothing else to buy, and ten
+# Rank a turn for $75 was the whole late game. The first members stay at the
+# flat price, which is what bust recovery is sized on.
+RECRUIT_FLAT_CREW = 5
+RECRUIT_STEP = 10
+RECRUIT_FLOOR = 25
 ROOT_EXCHANGE_COST = 50
 CAPTURE_RANK = 50
 CONTROL_RANK_HOURS = 6
@@ -1289,7 +1298,7 @@ SUPPORT_ITEMS = {item[0] for item in CREW_ITEMS[3:]}
 # Role name, capture cash, base Heat, owned security defense, owner service.
 EXCHANGE_ROLES = {
     "pbx": ("Public PBX", 25, 4, 0, "Lay Low: 1 turn, remove up to 15 Heat"),
-    "carrier": ("Carrier Switch", 50, 8, 2, "Recruit: 1 turn and $65 for one available crew"),
+    "carrier": ("Carrier Switch", 50, 8, 2, "Recruit: 1 turn, $10 under the boards' price, for one available crew"),
     "hub": ("Warez Hub", 75, 12, 0, "Warez outlet: 1 turn, $30-$70 payout, +4 Heat"),
 }
 
@@ -1300,6 +1309,15 @@ NEUTRAL_OPERATORS = {
     6: ("spool", "Spool Archive Collective", 6),
 }
 NPC_NAMES = {key: name for key, name, _ in NEUTRAL_OPERATORS.values()}
+NPC_CREWS = {key: defenders for key, _, defenders in NEUTRAL_OPERATORS.values()}
+# An operator displaced from its home comes back for it. Starting this long
+# after a capture, and once a day from then on, it tests a defence weaker than
+# its own crew. A defence that matches the crew is never tested, so the rule a
+# caller has to remember is one number per home. Without it, a board with one
+# caller was finished in two days: all ten exchanges held by a single defender
+# each, with nothing in the world that could ever take one back.
+NPC_PUSHBACK_GRACE = timedelta(hours=48)
+NPC_PUSHBACK_EVERY = timedelta(hours=24)
 NPC_STORIES = {
     "patch": "Patch Panel Society keeps the neighborhood PBX alive with salvaged relays. Its operators prize a quiet line and know when to disappear.",
     "relay": "Night Relay Union staffs the carrier's forgotten overnight shift. They treat every assigned guard as a promise to keep the switch running.",
@@ -1309,6 +1327,142 @@ INSIGNIA = {"modem": ("[::]", "Modem"), "relay": ("<-->", "Relay"),
             "signal": ("=||=", "Signal"), "archive": ("{##}", "Archive")}
 SCENE_LIMIT = 500
 SEASON_ARCHIVE_LIMIT = 12
+
+# ---------------------------------------------------------------------------
+# War dialing: the door's own name as its signature loop. A sweep spends a turn
+# dialing a prefix and writes the carriers that answer into the caller's black
+# book. Each is one system, hackable once, and goes cold after LEAD_LIFETIME.
+# ---------------------------------------------------------------------------
+DIAL_HEAT = 2
+BOOK_LIMIT = 6
+LEAD_LIFETIME = timedelta(hours=72)
+DIAL_SECOND_FIND = 0.5      # a sweep always finds one carrier; this often, two
+DIAL_RIG_FIND = 0.1         # and each rig tier adds this chance of one more
+
+# Name, difficulty as a share of the finder's living crew, the least that
+# difficulty may be, payout over the contract curve, Heat, Rank, and the crew a
+# failed attempt costs. The floor is what keeps a number found by a crew of
+# three from being a ninety-percent Legend ticket once that crew has grown.
+LEAD_TIERS: tuple[tuple[str, float, int, float, int, int, int], ...] = (
+    ("soft", 0.4, 1, 1.3, 6, 20, 0),
+    ("warm", 0.8, 3, 1.5, 10, 30, 1),
+    ("hard", 1.4, 8, 1.8, 14, 45, 1),
+    ("ice", 2.4, 16, 2.3, 18, 70, 1),
+)
+# What a sweep turns up out of a hundred, by tier, on the stock rig; each rig
+# tier moves LEAD_RIG_SHIFT of them from the softest tier to the two hardest.
+LEAD_WEIGHTS = (40, 35, 18, 7)
+LEAD_RIG_SHIFT = 3
+LEAD_PAY_SPREAD = 1.55
+
+# What answered: the system, its tier, and the banner it greets a caller with.
+LEAD_SYSTEMS: tuple[tuple[str, int, str], ...] = (
+    ("Voicemail box at an ad agency", 0, "ENTER MAILBOX NUMBER:"),
+    ("Sleepy dial-up BBS, sysop away", 0, "Enter your handle or NEW:"),
+    ("PBX maintenance port", 0, "DIAL 9 FOR OUTSIDE LINE"),
+    ("School district Apple II host", 0, "]CATALOG"),
+    ("Pizza chain order terminal", 0, "STORE #114 READY"),
+    ("Mail-order house order desk", 1, "OPERATOR ID:"),
+    ("University VAX in the physics lab", 1, "Username:"),
+    ("Radio station remote console", 1, "XMTR CTRL - PASSCODE?"),
+    ("Insurance office file server", 1, "LOGIN:"),
+    ("Travel agency booking terminal", 1, "SIGN-IN/AGENT:"),
+    ("Telco order-entry terminal", 2, "WIRE CENTER? "),
+    ("Credit bureau dial-in", 2, "SUBSCRIBER CODE:"),
+    ("Regional bank cash-machine net", 2, "NODE 7 // ENTER KEY"),
+    ("Packet-net gateway at a pharma firm", 2, "@"),
+    ("City hall payroll mini", 2, "ACCOUNT, PASSWORD:"),
+    ("Defense contractor timeshare", 3, "UNAUTHORIZED USE IS A FEDERAL CRIME"),
+    ("Central office switch console", 3, "M  00 TST 5 ESS"),
+    ("Wire-room clearing terminal", 3, "CHALLENGE 4471 - RESPONSE:"),
+    ("Long-lines network control", 3, "NCC> "),
+)
+# What a carrier pays out beyond cash, when the hack lands. Every perk is shown
+# in the black book: a sweep fingerprints what it finds, so planning around a
+# perk is the point of knowing it.
+LEAD_PERKS = {
+    "": ("", ""),
+    "crew": ("RECRUIT", "A phreak camped on the system joins your crew: +1 crew."),
+    "cool": ("COLD TRAIL", "You wipe the logs on the way out: no Heat added, 10 removed."),
+    "kit": ("CODES", "A file of calling-card codes: a free Burner Kit, or $40 if your slot is full."),
+    "jackpot": ("JACKPOT", "Somebody left the till open: the payout doubles."),
+}
+LEAD_PERK_ODDS = (("crew", 0.12), ("cool", 0.10), ("kit", 0.06), ("jackpot", 0.07))
+LEAD_COOL_HEAT = 10
+LEAD_KIT_CASH = 40
+
+# The rig: the one thing cash keeps buying. Name, price, and the Rank its
+# arrival is worth on the boards. Each tier past the stock modem makes every
+# sweep likelier to find an extra carrier and a harder one.
+RIGS: tuple[tuple[str, int, int], ...] = (
+    ("300 baud", 0, 0),
+    ("1200 baud", 250, 20),
+    ("2400 baud", 600, 40),
+    ("9600 baud", 1500, 80),
+    ("14.4k", 3500, 150),
+    ("28.8k", 8000, 300),
+)
+# What each rig's CONNECT line says.
+RIG_SPEEDS = (300, 1200, 2400, 9600, 14400, 28800)
+
+# ---------------------------------------------------------------------------
+# The rap sheet: what a caller has done across every season. A season wipes
+# cash, crew and Rank; this is the one thing that only ever grows, so a caller
+# who never places still has something to show for coming back. Stats climb,
+# badges are earned once, and none of it is power.
+# Key, name, how it is earned, the stat it reads and the count that earns it.
+# ---------------------------------------------------------------------------
+BADGES: tuple[tuple[str, str, str, str, int], ...] = (
+    ("carrier", "CARRIER DETECT", "Crack your first carrier.", "carriers", 1),
+    ("book", "BLACK BOOK", "Crack 25 carriers.", "carriers", 25),
+    ("ice", "ICE BREAKER", "Crack an ice-tier carrier.", "ice", 1),
+    ("till", "OPEN TILL", "Crack a jackpot carrier.", "jackpots", 1),
+    ("root", "ROOT", "Capture your first exchange.", "captures", 1),
+    ("trunk", "TRUNK LINE", "Hold three exchanges at once.", "most_held", 3),
+    ("ring", "FULL RING", "Hold all ten exchanges at once.", "most_held", 10),
+    ("raider", "RAIDER", "Win ten raids.", "raids", 10),
+    ("busted", "FIRST BUST", "Get busted. Everybody does.", "busts", 1),
+    ("ops", "OPERATOR", "Pull off ten operations.", "operations", 10),
+    ("boss", "CREW BOSS", "Lead 25 living crew.", "most_crew", 25),
+    ("speed", "HIGH SPEED", "Install the top rig.", "best_rig", len(RIGS) - 1),
+    ("elite", "ELITE", "Reach the Elite tier.", "best_rank", 1400),
+    ("legend", "LEGEND", "Reach the Legend tier.", "best_rank", 2800),
+    ("podium", "PODIUM", "Win a season medal.", "medals", 1),
+    ("veteran", "VETERAN", "Finish three seasons with Rank on the board.", "seasons", 3),
+)
+# Stats that record a high-water mark rather than a running count.
+CAREER_PEAKS = {"best_rank", "most_held", "most_crew", "best_rig"}
+# The running counts, in the order the rap sheet prints them, with their labels.
+CAREER_COUNTS = (("sweeps", "sweeps dialed"), ("carriers", "carriers cracked"),
+                 ("contracts", "contracts run"), ("operations", "operations pulled"),
+                 ("captures", "exchanges rooted"), ("raids", "raids won"),
+                 ("recruits", "crew recruited"), ("busts", "busts survived"),
+                 ("seasons", "seasons finished"), ("medals", "medals"))
+
+# ---------------------------------------------------------------------------
+# Line conditions: what the wire is like today. One per day of the season, the
+# same for every caller, chosen by the world and the date rather than rolled,
+# so reconnecting cannot change it and nothing has to be stored. Each is a
+# bonus or a trade; none is only a penalty. A season's first day is always
+# clear, so a fresh world plays by the plain rules.
+# Key, name, what a caller reads, effects.
+# ---------------------------------------------------------------------------
+LINE_CONDITIONS: tuple[tuple[str, str, str, dict[str, int]], ...] = (
+    # Each sentence fits beside its badge on an eighty-column switchboard.
+    ("clear", "CLEAR LINES", "Nothing on the wire. Business as usual.", {}),
+    ("rush", "WAREZ RUSH", "A hot release is moving: Trades pay $15 more.", {"trade": 15}),
+    ("board", "HOT BOARD", "The boards are flush: contracts and carriers pay +25%.", {"pay": 25}),
+    ("noise", "LINE NOISE", "Static on every tap: each Heat gain is 2 lower.", {"heat": -2}),
+    ("sweep", "FED SWEEP", "Agents are out: Heat gains +3, hack payouts +50%.",
+     {"heat": 3, "pay": 50}),
+    ("trunks", "OPEN TRUNKS", "Switches are on test: capture attempts cost $15 less.", {"capture": -15}),
+    ("blood", "FRESH BLOOD", "New kids on the boards: recruits cost $20 less.", {"recruit": -20}),
+    ("busy", "BUSY SIGNALS", "Modems answer everywhere: sweeps find +1 carrier.", {"finds": 1}),
+    ("meet", "SCENE MEET", "The crews are watching: every clean hack earns +5 Rank.", {"rank": 5}),
+)
+_LINE_INDEX = 0   # which condition the last settled world boundary found
+_LINE_DAY = 0     # season * 100 + day of season: what a preview was taken under
+_LINE_ENDS: datetime | None = None
 SEASON_AWARDS = "Gold / Silver / Bronze: top three positive-Rank players. Rank descending, then account ID ascending; cosmetic only."
 
 # (name, income per real hour controlled)
@@ -1385,6 +1539,27 @@ class Player:
     successful_operations: int = 0
     insignia: str = "modem"
     turns_trading: int = 0  # Trades in the current turn-day (issue #649)
+    rig: int = 0            # index into RIGS; resets with the season
+    bonus_rank: int = 0     # Rank from carriers, rigs and line conditions
+    # Read with the row and never stored on it, so they are not fields: the
+    # crew posted across this caller's holdings, and the line-condition day the
+    # snapshot was taken under (a preview from yesterday's wire is stale).
+    posted: ClassVar[int] = 0
+    line_day: ClassVar[int] = 0
+
+
+@dataclass(frozen=True)
+class Lead:
+    """One carrier in a caller's black book: a system that answered a sweep."""
+    id: int
+    system: int
+    number: str
+    difficulty: int
+    pay_low: int
+    pay_high: int
+    perk: str
+    found_at: str
+    expires_at: str
 
 
 @dataclass
@@ -1439,6 +1614,7 @@ class DashboardState:
     # than from a second read that could disagree with it.
     scene: list[Exchange] = field(default_factory=list)
     recent: list[GameEvent] = field(default_factory=list)
+    book: int = 0  # carriers in the black book that have not gone cold
 
 
 EVENT_HISTORY_LIMIT = 500
@@ -1453,7 +1629,67 @@ def rank_score(player: Player) -> int:
         + player.successful_raids * 25
         + player.successful_jobs * 15
         + player.successful_operations * 30
+        + player.bonus_rank
     )
+
+
+def line_condition() -> tuple[str, str, str, dict[str, int]]:
+    """Today's wire: key, name, what it does in words, and its effects."""
+    return LINE_CONDITIONS[_LINE_INDEX]
+
+
+def line_effect(name: str) -> int:
+    """Today's adjustment to `name`; zero on a clear wire."""
+    return LINE_CONDITIONS[_LINE_INDEX][3].get(name, 0)
+
+
+def lines_switched_off() -> bool:
+    """`DOOR_LINES=0` (or `off`, `no`, `false`) pins a clear wire every day.
+
+    For a SysOp who wants the plain rules, and for the probes and tests that
+    measure them: a rule that changes with the date cannot be pinned by one.
+    """
+    return os.environ.get("DOOR_LINES", "").strip().lower() in ("0", "off", "no", "false")
+
+
+def _line_pick(world: str, season: int, day: int) -> int:
+    """Which condition a season's day gets: never the same two days running.
+
+    `world` is the world's owner ID, so two boards do not share a calendar and
+    one board's calendar does not move when its SysOp resets the season clock.
+    """
+    picks = len(LINE_CONDITIONS) - 1
+    pick = 0
+    for current in range(1, min(day, 400) + 1):
+        roll = 1 + zlib.crc32(f"{world}/{season}/{current}".encode("utf-8")) % picks
+        pick = roll if roll != pick else 1 + roll % picks
+    return pick
+
+
+def set_line_conditions(conn: sqlite3.Connection, season: int, now: datetime) -> None:
+    """Fix today's wire from the world's own calendar, at a world boundary.
+
+    Module state rather than an argument threaded through every rule: a door
+    process is one caller's session, and every transaction settles the world
+    before it reads a price, so the rules always see the day they commit on.
+    """
+    global _LINE_INDEX, _LINE_DAY, _LINE_ENDS
+    start = get_or_create_season_anchor(conn, now) + (season - 1) * SEASON
+    day = max(0, (now - start) // DAY)
+    _LINE_ENDS = start + (day + 1) * DAY
+    if lines_switched_off():
+        _LINE_INDEX = _LINE_DAY = 0
+        return
+    owner = conn.execute("SELECT value FROM meta WHERE key='node_owner'").fetchone()
+    _LINE_INDEX = _line_pick(owner[0] if owner else "", season, day)
+    _LINE_DAY = season * 100 + min(day, 99)
+
+
+def recruit_cost(player: Player) -> int:
+    """What this crew pays for its next member: more for each one it has."""
+    living = player.crew + player.posted
+    return max(RECRUIT_FLOOR, RECRUIT_COST + RECRUIT_STEP * max(0, living - RECRUIT_FLAT_CREW)
+               + line_effect("recruit"))
 
 
 def tier_index(rank: int) -> int:
@@ -1533,6 +1769,8 @@ def reset_player_for_season(player: Player, season_number: int, now: datetime) -
     player.support = ""
     clear_operation(player)
     player.successful_operations = 0
+    player.rig = 0
+    player.bonus_rank = 0
     player.season_number = season_number
 
 
@@ -1561,6 +1799,8 @@ def settle_player_clocks(player: Player, now: datetime) -> datetime:
 
 
 def adjusted_heat(player: Player, action: str, amount: float) -> float:
+    if amount > 0:
+        amount = max(0, amount + line_effect("heat"))
     if (action == "job" and player.specialty == "phreakers"
             or action in {"raid", "root"} and player.specialty == "lookouts"):
         amount = max(0, amount - 3)
@@ -1576,10 +1816,17 @@ def apply_heat(player: Player, amount: float, rng: random.Random, *, action: str
     player.heat += adjusted_heat(player, action, amount)
     if action in {"job", "raid", "root"} and player.support == "burner":
         player.support = ""
+    return roll_bust(player, rng)
+
+
+def roll_bust(player: Player, rng: random.Random) -> bool:
+    """The bust check on the Heat a caller is carrying, and its consequence."""
     if player.heat <= HEAT_BUST_THRESHOLD:
         return False
     chance = min(HEAT_BUST_CHANCE_CAP, (player.heat - HEAT_BUST_THRESHOLD) * HEAT_BUST_CHANCE_PER_POINT)
     if rng.random() < chance:
+        # Read once by the action transaction, for the rap sheet; never stored.
+        player.__dict__["bust_flag"] = True
         cash_loss = .10 if player.support == "stash" else BUST_CASH_LOSS_FRACTION
         player.cash = int(player.cash * (1 - cash_loss))
         if player.support == "stash":
@@ -1601,7 +1848,8 @@ def trade_payout_range(player: Player) -> tuple[int, int]:
     """
     extra = max(0, player.turns_trading - TRADE_FULL_PAYOUTS + 1)
     low, high = TRADE_WAREZ_RANGE
-    return low, max(TRADE_TAPER_FLOOR, high - TRADE_TAPER_STEP * extra)
+    bonus = line_effect("trade")
+    return low + bonus, max(TRADE_TAPER_FLOOR, high - TRADE_TAPER_STEP * extra) + bonus
 
 
 def action_trade_warez(player: Player, rng: random.Random) -> tuple[int, bool]:
@@ -1613,9 +1861,10 @@ def action_trade_warez(player: Player, rng: random.Random) -> tuple[int, bool]:
 
 
 def action_recruit(player: Player) -> bool:
-    if player.cash < RECRUIT_COST:
+    cost = recruit_cost(player)
+    if player.cash < cost:
         return False
-    player.cash -= RECRUIT_COST
+    player.cash -= cost
     player.crew += 1
     player.crew_recruited_total += 1
     return True
@@ -1627,6 +1876,7 @@ def job_terms(choice: JobChoice) -> tuple[str, int, tuple[int, int], str, int, i
         raise ActionRejected("Contract or approach is unavailable. Return to the contract board; nothing spent.")
     name, difficulty, payout = JOBS[choice.contract]
     approach, percent, heat, loss = JOB_APPROACHES[choice.approach]
+    percent = percent * (100 + line_effect("pay")) // 100
     return name, difficulty, (payout[0] * percent // 100, payout[1] * percent // 100), approach, heat, loss
 
 
@@ -1640,12 +1890,114 @@ def action_job(player: Player, rng: random.Random, choice: JobChoice = JobChoice
             player.successful_operations += 1
         else:
             player.successful_jobs += 1
+        player.bonus_rank += line_effect("rank")
     else:
         payout = 20 if player.specialty == "fixers" else 0
         player.cash += payout
         player.crew = max(1, player.crew - loss)
     busted = apply_heat(player, heat, rng, action="job")
     return name, success, payout, busted
+
+
+# -- war dialing ----------------------------------------------------------------
+
+def lead_tier(lead: Lead) -> int:
+    return LEAD_SYSTEMS[lead.system][1]
+
+
+def lead_terms(lead: Lead) -> tuple[str, int, tuple[int, int], int, int, int]:
+    """A carrier as an action: name, difficulty, today's payout, Heat, Rank, crew at stake."""
+    name, tier, _banner = LEAD_SYSTEMS[lead.system]
+    _, _, _, _, heat, rank, loss = LEAD_TIERS[tier]
+    percent = (100 + line_effect("pay")) * (2 if lead.perk == "jackpot" else 1)
+    return (name, lead.difficulty, (lead.pay_low * percent // 100, lead.pay_high * percent // 100),
+            heat, rank + line_effect("rank"), loss)
+
+
+def sweep_weights(rig: int) -> tuple[int, int, int, int]:
+    """Out of a hundred answers, how many are soft, warm, hard and ice on this rig."""
+    rig = max(0, min(rig, len(RIGS) - 1))
+    soft, warm, hard, ice = LEAD_WEIGHTS
+    return soft - 2 * LEAD_RIG_SHIFT * rig, warm, hard + LEAD_RIG_SHIFT * rig, ice + LEAD_RIG_SHIFT * rig
+
+
+def roll_lead(player: Player, rng: random.Random, prefix: str) -> tuple[int, str, int, int, int, str]:
+    """One carrier answering a sweep: system, number, difficulty, payout range, perk.
+
+    Difficulty is sized on the finder's *living* crew, posted members included:
+    sized on the available crew alone, posting everyone to a garrison before a
+    sweep would have bought soft numbers at any tier's Rank.
+    """
+    roll, tier = rng.random() * 100, len(LEAD_TIERS) - 1
+    for index, weight in enumerate(sweep_weights(player.rig)):
+        if roll < weight:
+            tier = index
+            break
+        roll -= weight
+    system = rng.choice([index for index, entry in enumerate(LEAD_SYSTEMS) if entry[1] == tier])
+    _, share, floor, pay, _, _, _ = LEAD_TIERS[tier]
+    difficulty = max(floor, round((player.crew + player.posted) * share))
+    low = int((45 + 11 * difficulty) * pay)
+    perk, roll = "", rng.random()
+    for key, odds in LEAD_PERK_ODDS:
+        if roll < odds:
+            perk = key
+            break
+        roll -= odds
+    return (system, f"{prefix}-{rng.randint(100, 199):04d}", difficulty, low,
+            int(low * LEAD_PAY_SPREAD), perk)
+
+
+def sweep_count(player: Player, rng: random.Random) -> int:
+    """How many carriers one sweep turns up: always one, often two, a rig helps."""
+    found = (1 + int(rng.random() < DIAL_SECOND_FIND)
+             + int(rng.random() < DIAL_RIG_FIND * player.rig) + line_effect("finds"))
+    return max(1, min(found, BOOK_LIMIT))
+
+
+def action_dial(player: Player, rng: random.Random, prefixes: list[str]) -> tuple[list[tuple], bool]:
+    """Sweep a prefix: the carriers that answered, and whether the Feds did too."""
+    prefix = rng.choice(prefixes) if prefixes else "555"
+    finds = [roll_lead(player, rng, prefix) for _ in range(sweep_count(player, rng))]
+    busted = apply_heat(player, DIAL_HEAT, rng, action="dial")
+    return finds, busted
+
+
+def action_lead(player: Player, lead: Lead, rng: random.Random) -> tuple[bool, int, bool]:
+    """Hack one carrier out of the black book. Win or lose, the number is spent."""
+    _, difficulty, (low, high), heat, rank, loss = lead_terms(lead)
+    success = rng.random() < success_chance(player.crew, difficulty)
+    cold = success and lead.perk == "cool"
+    if success:
+        payout = rng.randint(low, high)
+        player.cash += payout
+        player.bonus_rank += rank
+        if lead.perk == "crew":
+            player.crew += 1
+            player.crew_recruited_total += 1
+    else:
+        payout = 20 if player.specialty == "fixers" else 0
+        player.cash += payout
+        player.crew = max(1, player.crew - loss)
+    if cold:
+        # The logs are wiped: nothing is added, so a Burner Kit is not spent
+        # on it either. Heat already carried can still draw the bust roll.
+        player.heat = max(0.0, player.heat - LEAD_COOL_HEAT)
+        busted = roll_bust(player, rng)
+    else:
+        busted = apply_heat(player, heat, rng, action="job")
+    if success and lead.perk == "kit":
+        # After the Heat: a kit handed over first would be burned by this very hack.
+        if player.support:
+            player.cash += LEAD_KIT_CASH
+            payout += LEAD_KIT_CASH
+        else:
+            player.support = "burner"
+    return success, payout, busted
+
+
+def rig_name(player: Player) -> str:
+    return RIGS[max(0, min(player.rig, len(RIGS) - 1))][0]
 
 
 def action_raid(attacker: Player, target: Player, rng: random.Random, *, now: datetime | None = None) -> tuple[bool, int, bool]:
@@ -1703,8 +2055,17 @@ def exchange_defense(exchange: Exchange) -> int:
     return exchange.garrison + (exchange_terms(exchange)[3] if exchange_occupied(exchange) else 0)
 
 
+def home_threat(exchange: Exchange) -> tuple[str, int, int] | None:
+    """For a caller-held operator home: the operator, its crew, and how many
+    points the defence falls short of it. None anywhere else."""
+    if not exchange.npc_home or exchange.controller_user_id is None:
+        return None
+    crew = NPC_CREWS[exchange.npc_home]
+    return NPC_NAMES[exchange.npc_home], crew, max(0, crew - exchange_defense(exchange))
+
+
 def capture_cost(exchange: Exchange) -> int:
-    return exchange_terms(exchange)[1] - exchange.capture_discount
+    return max(5, exchange_terms(exchange)[1] - exchange.capture_discount + line_effect("capture"))
 
 
 def action_root_exchange(attacker: Player, exchange: Exchange, now: datetime, rng: random.Random) -> tuple[bool, bool]:
@@ -1752,7 +2113,7 @@ def _resolve_db_path() -> Path:
     return Path.home() / ".netbbs" / "wardialer.db"
 
 
-WORLD_SCHEMA_VERSION = 11
+WORLD_SCHEMA_VERSION = 12
 _OPERATION_COLUMNS = {"operation_contract", "operation_approach", "operation_stage", "successful_operations"}
 
 # Versioned schema contract: future additions need a new numbered migration.
@@ -1786,6 +2147,10 @@ def _validate_world_layout(conn: sqlite3.Connection, version: int) -> None:
     if version >= 10:
         required_tables["seasons"] = {"number", "ended_at", "status", "players"}
         required_tables["season_results"] = {"season", "user_id", "handle", "rank", "placement", "medal", "insignia"}
+    if version >= 12:
+        required_tables["leads"] = {"id", "user_id", "season", "system", "number", "difficulty",
+                                    "pay_low", "pay_high", "perk", "found_at", "expires_at"}
+        required_tables["career"] = {"user_id", "data"}
     if not set(required_tables) <= tables:
         raise WorldStateError("Unrecognized or incomplete War Dialer database. Preserve it for SysOp recovery; no replacement was created.")
     for table, required in required_tables.items():
@@ -1807,6 +2172,8 @@ def _validate_world_layout(conn: sqlite3.Connection, version: int) -> None:
             expected = expected | {"insignia"}
         if version >= 11 and table == "players":
             expected = expected | {"turns_trading"}
+        if version >= 12 and table == "players":
+            expected = expected | {"rig", "bonus_rank"}
         if not expected <= columns:
             raise WorldStateError(f"War Dialer {table} schema is incomplete. Preserve it for SysOp recovery; no replacement was created.")
 
@@ -1892,6 +2259,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
                     fresh.execute("PRAGMA user_version=10")
                     _migrate_world_v11(fresh)
                     fresh.execute("PRAGMA user_version=11")
+                    _migrate_world_v12(fresh)
+                    fresh.execute("PRAGMA user_version=12")
             finally:
                 fresh.close()
             try:
@@ -1965,6 +2334,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         if version < 11:
             _migrate_world_v11(conn)
             conn.execute("PRAGMA user_version=11")
+        if version < 12:
+            _migrate_world_v12(conn)
+            conn.execute("PRAGMA user_version=12")
         _validate_world_layout(conn, WORLD_SCHEMA_VERSION)
 
 
@@ -2124,7 +2496,7 @@ def _archive_season(conn: sqlite3.Connection, old: int, current: int, now: datet
         player = read_player(conn, row[0])
         player.cash += _collect_exchange_income(conn, player, cutoff)
         _save_player(conn, player)
-    players = conn.execute(f"SELECT user_id,handle,{_RANK_SQL} AS rank,insignia FROM players WHERE season_number=? ORDER BY rank DESC,user_id", (old,)).fetchall()
+    players = conn.execute(f"SELECT user_id,handle,{_rank_sql(conn)} AS rank,insignia FROM players WHERE season_number=? ORDER BY rank DESC,user_id", (old,)).fetchall()
     conn.execute("INSERT INTO seasons(number,ended_at,status,players) VALUES (?,?,'completed',?)", (old, to_iso(cutoff), len(players)))
     for place, player in enumerate(players, 1):
         medal = ('Gold', 'Silver', 'Bronze')[place - 1] if place <= 3 and player['rank'] > 0 else ''
@@ -2133,6 +2505,9 @@ def _archive_season(conn: sqlite3.Connection, old: int, current: int, now: datet
         record_event(conn, player['user_id'], None,
                      f"{CRACKDOWN_RECEIPT} {old}. Final Rank {player['rank']}; place {place}/{len(players)}; {medal or 'no medal'}. "
                      f"Fresh season {current}: competitive resources reset. Back on the switchboard, [I] Scene shows retained season results.", cutoff)
+        if player['rank'] > 0:
+            career_bump(conn, player['user_id'], cutoff, receipt=True, seasons=1,
+                        medals=int(bool(medal)), best_rank=player['rank'])
     _GAME_EVENTS.event("medal", f"Season {old}",
                        user_ids=[player['user_id'] for player in players[:3] if player['rank'] > 0])
     _GAME_EVENTS.season_reset(current)
@@ -2155,6 +2530,30 @@ def _migrate_world_v11(conn: sqlite3.Connection) -> None:
                  "CHECK (turns_trading >= 0)")
 
 
+def _migrate_world_v12(conn: sqlite3.Connection) -> None:
+    """War dialing, rigs and the rap sheet.
+
+    Everything starts empty: nobody is handed carriers they did not dial, a rig
+    they did not buy or a badge for play nobody counted. `bonus_rank` is zero
+    for everyone, so a season under way keeps exactly the Rank it had.
+    """
+    conn.execute("ALTER TABLE players ADD COLUMN rig INTEGER NOT NULL DEFAULT 0 "
+                 f"CHECK (rig BETWEEN 0 AND {len(RIGS) - 1})")
+    conn.execute("ALTER TABLE players ADD COLUMN bonus_rank INTEGER NOT NULL DEFAULT 0 "
+                 "CHECK (bonus_rank >= 0)")
+    conn.execute("CREATE TABLE leads (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, "
+                 "season INTEGER NOT NULL, system INTEGER NOT NULL CHECK (system BETWEEN 0 AND 255), "
+                 "number TEXT NOT NULL CHECK (length(number) <= 16), "
+                 "difficulty INTEGER NOT NULL CHECK (difficulty >= 1), "
+                 "pay_low INTEGER NOT NULL CHECK (pay_low >= 0), "
+                 "pay_high INTEGER NOT NULL CHECK (pay_high >= pay_low), "
+                 "perk TEXT NOT NULL CHECK (perk IN ('', 'crew', 'cool', 'kit', 'jackpot')), "
+                 "found_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
+    conn.execute("CREATE INDEX leads_owner ON leads(user_id, id)")
+    conn.execute("CREATE TABLE career (user_id INTEGER PRIMARY KEY, "
+                 "data TEXT NOT NULL CHECK (length(data) <= 4000))")
+
+
 def _migrate_world_v9(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE players ADD COLUMN insignia TEXT NOT NULL DEFAULT 'modem' CHECK (insignia IN ('modem', 'relay', 'signal', 'archive'))")
     conn.execute("CREATE TABLE scene (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, season INTEGER NOT NULL, "
@@ -2162,15 +2561,23 @@ def _migrate_world_v9(conn: sqlite3.Connection) -> None:
                  "summary TEXT NOT NULL CHECK (length(summary) <= 400))")
 
 
-def record_scene(conn: sqlite3.Connection, kind: str, exchange_id: int, now: datetime, *, actor_handle: str = "") -> None:
-    """Publish only territory activity, inside the mutation's transaction."""
+def record_scene(conn: sqlite3.Connection, kind: str, exchange_id: int, now: datetime, *,
+                 actor_handle: str = "", retaken: bool = False) -> None:
+    """Publish only territory activity, inside the mutation's transaction.
+
+    `retaken` is an operator taking its home back from `actor_handle`; it is
+    filed as neutral activity, which is what it is.
+    """
     if _world_schema_version(conn) < 9:
         return
     if not conn.in_transaction:
         raise RuntimeError("Scene bulletins require an action transaction")
     exchange = conn.execute("SELECT name,season_number,npc_key FROM exchanges WHERE id=?", (exchange_id,)).fetchone()
     name = _event_plain(exchange["name"])[:120]
-    if kind == "neutral":
+    if kind == "neutral" and retaken:
+        summary = ("NPC: " + NPC_NAMES[exchange["npc_key"]] + " retook " + name + " from "
+                   + _event_plain(actor_handle)[:80] + ".")
+    elif kind == "neutral":
         summary = "NPC: " + NPC_NAMES[exchange["npc_key"]] + " stationed at " + name + "."
     elif kind in {"capture", "abandon"}:
         summary = _event_plain(actor_handle)[:80] + (" captured " if kind == "capture" else " abandoned ") + name + "."
@@ -2201,14 +2608,62 @@ def _migrate_world_v8(conn: sqlite3.Connection) -> None:
     _settle_neutral_operators(conn, now_utc())
 
 
+def _npc_pushback(conn: sqlite3.Connection, exchange: sqlite3.Row, key: str, defenders: int,
+                  now: datetime) -> None:
+    """An operator's daily test of a caller holding its home.
+
+    One check per deadline, however long the world sat unvisited: a missed day
+    is not replayed. The roll is drawn from the exchange and the deadline, so
+    it is the same roll whoever's visit happens to settle it.
+    """
+    deadline = exchange["npc_return_at"]
+    if not deadline:
+        # Held since before operators pushed back: the grace starts now.
+        conn.execute("UPDATE exchanges SET npc_return_at=? WHERE id=?",
+                     (to_iso(now + NPC_PUSHBACK_GRACE), exchange["id"]))
+        return
+    if from_iso(deadline) > now:
+        return
+    defence = exchange["garrison"] + EXCHANGE_ROLES.get(exchange["role"], ("", 0, 0, 0, ""))[3]
+    owner_id, name, npc = exchange["controller_user_id"], _event_plain(exchange["name"])[:120], NPC_NAMES[key]
+    roll = random.Random(zlib.crc32(f"{exchange['id']}/{deadline}".encode("ascii"))).random()
+    if defence >= defenders or roll >= success_chance(defenders, defence):
+        conn.execute("UPDATE exchanges SET npc_return_at=? WHERE id=?",
+                     (to_iso(now + NPC_PUSHBACK_EVERY), exchange["id"]))
+        if defence < defenders:
+            record_event(conn, owner_id, npc,
+                         f"{npc} tried to retake {name}; your garrison held. Post "
+                         f"{defenders - defence} more defence and they stop trying.", now)
+        return
+    handle = "a departed crew"
+    # An orphaned holding has nobody to pay or hand defenders back to.
+    if conn.execute("SELECT 1 FROM players WHERE user_id=?", (owner_id,)).fetchone() is not None:
+        owner = read_player(conn, owner_id)
+        owner.cash += _collect_exchange_income(conn, owner, now)
+        owner.crew += exchange["garrison"]
+        _save_player(conn, owner)
+        handle = owner.handle
+    conn.execute("UPDATE exchanges SET controller_user_id=NULL, npc_key=?, npc_return_at='', garrison=?, "
+                 "controlled_since=?, income_collected_at=? WHERE id=?",
+                 (key, defenders, to_iso(now), to_iso(now), exchange["id"]))
+    conn.execute("DELETE FROM meta WHERE key=?", (f"exchange_withdrawal:{exchange['id']}",))
+    record_scene(conn, "neutral", exchange["id"], now, actor_handle=handle, retaken=True)
+    record_event(conn, owner_id, npc,
+                 f"{npc} retook {name}! {counted(exchange['garrison'], 'defender')} returned to your "
+                 f"available crew. They test any defence weaker than their crew of {defenders}.", now)
+
+
 def _settle_neutral_operators(conn: sqlite3.Connection, now: datetime) -> None:
-    """At most three deterministic returns; no human account, income or attacks."""
-    rows = conn.execute("SELECT id,controller_user_id,npc_key,npc_return_at FROM exchanges ORDER BY id").fetchall()
+    """At most three deterministic returns or tests; never a human account or income."""
+    rows = conn.execute("SELECT * FROM exchanges ORDER BY id").fetchall()
     for position, (key, _, defenders) in NEUTRAL_OPERATORS.items():
         if position >= len(rows):
             continue
         exchange = rows[position]
-        if exchange["controller_user_id"] is not None or exchange["npc_key"]:
+        if exchange["npc_key"]:
+            continue
+        if exchange["controller_user_id"] is not None:
+            _npc_pushback(conn, exchange, key, defenders, now)
             continue
         deadline = exchange["npc_return_at"]
         if deadline and from_iso(deadline) > now:
@@ -2408,8 +2863,9 @@ class _GameEvents:
         row = conn.execute("SELECT value FROM meta WHERE key='active_season'").fetchone()
         season = int(row[0]) if row is not None else conn.execute(
             "SELECT COALESCE(MAX(season_number), 1) FROM players").fetchone()[0]
-        rows = conn.execute(f"SELECT user_id,{_RANK_SQL} AS rank FROM players WHERE season_number=? "
-                            f"AND {_RANK_SQL}>0 ORDER BY rank DESC,user_id LIMIT ?",
+        rank_sql = _rank_sql(conn)
+        rows = conn.execute(f"SELECT user_id,{rank_sql} AS rank FROM players WHERE season_number=? "
+                            f"AND {rank_sql}>0 ORDER BY rank DESC,user_id LIMIT ?",
                             (season, self.rows_max)).fetchall()
         return (f"Season {season}", tuple((r[0], r[1]) for r in rows))
 
@@ -2524,6 +2980,7 @@ def _settle_world(conn: sqlite3.Connection, now: datetime) -> int:
     elif int(marker["value"]) == season:
         if _world_schema_version(conn) >= 8:
             _settle_neutral_operators(conn, now)
+        set_line_conditions(conn, season, now)
         return season
 
     if marker is not None and _world_schema_version(conn) >= 10:
@@ -2553,8 +3010,11 @@ def _settle_world(conn: sqlite3.Connection, now: datetime) -> int:
     conn.execute("DELETE FROM meta WHERE key LIKE 'exchange_withdrawal:%'")
     if _world_schema_version(conn) >= 6:
         conn.execute("DELETE FROM recon WHERE season < ?", (season,))
+    if _world_schema_version(conn) >= 12:
+        conn.execute("DELETE FROM leads WHERE season < ?", (season,))
     if _world_schema_version(conn) >= 8:
         _settle_neutral_operators(conn, now)
+    set_line_conditions(conn, season, now)
     return season
 
 
@@ -2586,6 +3046,8 @@ def _row_to_player(row: sqlite3.Row) -> Player:
         successful_operations=row["successful_operations"] if "successful_operations" in row.keys() else 0,
         insignia=row["insignia"] if "insignia" in row.keys() else "modem",
         turns_trading=row["turns_trading"] if "turns_trading" in row.keys() else 0,
+        rig=row["rig"] if "rig" in row.keys() else 0,
+        bonus_rank=row["bonus_rank"] if "bonus_rank" in row.keys() else 0,
     )
 
 
@@ -2627,6 +3089,9 @@ def _save_player(conn: sqlite3.Connection, player: Player) -> None:
     if _world_schema_version(conn) >= 11:
         conn.execute("UPDATE players SET turns_trading=? WHERE user_id=?",
                      (player.turns_trading, player.user_id))
+    if _world_schema_version(conn) >= 12:
+        conn.execute("UPDATE players SET rig=?, bonus_rank=? WHERE user_id=?",
+                     (player.rig, player.bonus_rank, player.user_id))
     _GAME_EVENTS.player_saved(player)
 
 
@@ -2668,7 +3133,10 @@ def read_player(conn: sqlite3.Connection, user_id: int) -> Player:
     row = conn.execute("SELECT * FROM players WHERE user_id=?", (user_id,)).fetchone()
     if row is None:
         raise ActionRejected("Player no longer exists. Reconnect to the game.")
-    return _row_to_player(row)
+    player = _row_to_player(row)
+    player.posted = assigned_crew(conn, user_id)
+    player.line_day = _LINE_DAY
+    return player
 
 
 def refresh_player(conn: sqlite3.Connection, user_id: int, now: datetime) -> Player:
@@ -2699,9 +3167,13 @@ def dashboard_state(conn: sqlite3.Connection, user_id: int, now: datetime) -> Da
         ).fetchone()[0]
         anchor = get_or_create_season_anchor(conn, now)
         blocked = conn.execute("SELECT handle FROM players WHERE user_id=?", (player.last_raided_by,)).fetchone()
+        book = 0
+        if _world_schema_version(conn) >= 12:
+            book = conn.execute("SELECT COUNT(*) FROM leads WHERE user_id=? AND season=? AND expires_at>?",
+                                (user_id, player.season_number, to_iso(now))).fetchone()[0]
         return DashboardState(player, holdings, new_events, anchor + player.season_number * SEASON,
                               blocked[0] if blocked else None, scene,
-                              history_events(conn, user_id, limit=SWITCHBOARD_FEED_LIMIT))
+                              history_events(conn, user_id, limit=SWITCHBOARD_FEED_LIMIT), book)
 
 
 def load_or_create_player(conn: sqlite3.Connection, user_id: int, handle: str, now: datetime, season_number: int) -> Player:
@@ -2736,6 +3208,76 @@ class ActionDelta:
     rank: int = 0
     turns: int = 0
     assigned: int = 0
+    # Badge keys this action earned, for the result screen to announce.
+    badges: list[str] = field(default_factory=list)
+
+
+def read_career(conn: sqlite3.Connection, user_id: int) -> dict:
+    """A caller's rap sheet: `stats` and `badges` (key to the date earned).
+
+    Unreadable or unexpected data reads as an empty sheet rather than failing a
+    visit: nothing here is competitive state, and the next action rewrites it.
+    """
+    empty = {"stats": {}, "badges": {}}
+    if _world_schema_version(conn) < 12:
+        return empty
+    row = conn.execute("SELECT data FROM career WHERE user_id=?", (user_id,)).fetchone()
+    if row is None:
+        return empty
+    try:
+        data = json.loads(row[0])
+        stats = {str(key): int(value) for key, value in data["stats"].items()
+                 if type(value) is int and value >= 0}
+        badges = {str(key): str(value)[:10] for key, value in data["badges"].items()}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return empty
+    return {"stats": stats, "badges": badges}
+
+
+def career_bump(conn: sqlite3.Connection, user_id: int, at: datetime, *, player: Player | None = None,
+                delta: ActionDelta | None = None, receipt: bool = False, **counts: int) -> list[str]:
+    """Add to a caller's lifetime counts and award any badge they now earn.
+
+    Runs inside the transaction that did the deed, so a rolled-back action
+    leaves no trace on the sheet. `player` refreshes the high-water marks.
+    `receipt` is for a badge earned with nobody watching -- a season closing
+    while its medallist is away: a badge earned by an action is announced on
+    that action's result, and a receipt for it only pushed the turn's own line
+    off a feed that shows one row.
+    """
+    if _world_schema_version(conn) < 12:
+        return []
+    if not conn.in_transaction:
+        raise RuntimeError("The rap sheet is written inside the action's transaction")
+    career = read_career(conn, user_id)
+    stats, badges = career["stats"], career["badges"]
+    if player is not None:
+        counts = dict(counts, best_rank=rank_score(player), best_rig=player.rig,
+                      most_crew=player.crew + assigned_crew(conn, user_id),
+                      most_held=conn.execute("SELECT COUNT(*) FROM exchanges WHERE controller_user_id=?",
+                                             (user_id,)).fetchone()[0])
+    changed = False
+    for key, value in counts.items():
+        value = int(value)
+        new = max(stats.get(key, 0), value) if key in CAREER_PEAKS else stats.get(key, 0) + value
+        if new != stats.get(key, 0):
+            stats[key], changed = new, True
+    earned = [key for key, _, _, stat, need in BADGES if key not in badges and stats.get(stat, 0) >= need]
+    if not changed and not earned:
+        return []
+    names = {key: name for key, name, _, _, _ in BADGES}
+    for key in earned:
+        badges[key] = to_iso(at)[:10]
+        if receipt:
+            # The caller's own receipt: read already, so it never rings as news.
+            record_event(conn, user_id, None,
+                         f"Badge earned: {names[key]}. [I] Scene shows your rap sheet.", at, seen=True)
+    conn.execute("INSERT INTO career(user_id,data) VALUES (?,?) "
+                 "ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
+                 (user_id, json.dumps({"stats": stats, "badges": badges}, separators=(",", ":"))))
+    if delta is not None:
+        delta.badges += earned
+    return earned
 
 
 def assigned_crew(conn: sqlite3.Connection, user_id: int) -> int:
@@ -2744,7 +3286,8 @@ def assigned_crew(conn: sqlite3.Connection, user_id: int) -> int:
 
 
 def actor_preview_state(player: Player) -> tuple:
-    return (player.cash, player.crew, player.turns_used, player.season_number, rank_score(player), player.specialty, player.support, operation_state(player))
+    return (player.cash, player.crew, player.turns_used, player.season_number, rank_score(player),
+            player.specialty, player.support, operation_state(player), player.rig, player.line_day)
 
 
 @contextmanager
@@ -2769,13 +3312,24 @@ def _action_player(conn: sqlite3.Connection, snapshot: Player, now: datetime, *,
         if player.turns_used >= TURNS_PER_DAY:
             raise ActionRejected("No turns left. No resources spent.")
         before = (player.cash, player.crew, player.heat, rank_score(player), player.turns_used)
+        counted = (player.successful_jobs, player.successful_operations, player.successful_raids,
+                   player.exchanges_taken_total, player.crew_recruited_total)
         assigned_before = assigned_crew(conn, player.user_id)
+        if delta is not None:
+            delta.badges.clear()
         yield player, now
         if player.turns_used == 0:
             player.turn_day_start = player.heat_updated_at
         player.turns_used += 1
         _save_player(conn, player)
         assigned_after = assigned_crew(conn, player.user_id)
+        career_bump(conn, player.user_id, now, player=player, delta=delta,
+                    contracts=player.successful_jobs - counted[0],
+                    operations=player.successful_operations - counted[1],
+                    raids=player.successful_raids - counted[2],
+                    captures=player.exchanges_taken_total - counted[3],
+                    recruits=player.crew_recruited_total - counted[4],
+                    busts=int(player.__dict__.pop("bust_flag", False)))
     snapshot.__dict__.update(player.__dict__)
     if delta is not None:
         delta.cash = player.cash - before[0]
@@ -2795,8 +3349,77 @@ def resolve_trade_warez(conn: sqlite3.Connection, player: Player, now: datetime,
 def resolve_recruit(conn: sqlite3.Connection, player: Player, now: datetime, *, require_preview: bool = False, delta: ActionDelta | None = None) -> bool:
     with _action_player(conn, player, now, require_preview=require_preview, delta=delta) as (actor, now):
         if not action_recruit(actor):
-            raise ActionRejected(f"Not enough cash (need ${RECRUIT_COST}). No resources spent.")
+            raise ActionRejected(f"Not enough cash (need ${recruit_cost(actor)}). No resources spent.")
     return True
+
+
+# -- the black book -----------------------------------------------------------
+
+def _row_to_lead(row: sqlite3.Row) -> Lead:
+    return Lead(id=row["id"], system=min(row["system"], len(LEAD_SYSTEMS) - 1), number=row["number"],
+                difficulty=row["difficulty"], pay_low=row["pay_low"], pay_high=row["pay_high"],
+                perk=row["perk"] if row["perk"] in LEAD_PERKS else "", found_at=row["found_at"],
+                expires_at=row["expires_at"])
+
+
+def read_leads(conn: sqlite3.Connection, user_id: int, now: datetime) -> list[Lead]:
+    """A caller's black book: this season's carriers that have not gone cold."""
+    with _write_transaction(conn):
+        season = _settle_world(conn, now)
+        if _world_schema_version(conn) < 12:
+            return []
+        conn.execute("DELETE FROM leads WHERE user_id=? AND (season<>? OR expires_at<=?)",
+                     (user_id, season, to_iso(now)))
+        return [_row_to_lead(row) for row in conn.execute(
+            "SELECT * FROM leads WHERE user_id=? ORDER BY id", (user_id,))]
+
+
+def resolve_dial(conn: sqlite3.Connection, player: Player, now: datetime, rng: random.Random, *,
+                 require_preview: bool = False, delta: ActionDelta | None = None) -> tuple[list[Lead], bool]:
+    """One sweep: a turn, a little Heat, and the carriers that answered.
+
+    The book keeps the newest BOOK_LIMIT numbers. A sweep into a full book
+    writes over the oldest, which the preview says before the turn is spent.
+    """
+    with _action_player(conn, player, now, require_preview=require_preview, delta=delta) as (actor, at):
+        prefixes = [row[0].split()[0] for row in conn.execute("SELECT name FROM exchanges ORDER BY id")]
+        finds, busted = action_dial(actor, rng, prefixes)
+        conn.execute("DELETE FROM leads WHERE user_id=? AND (season<>? OR expires_at<=?)",
+                     (actor.user_id, actor.season_number, to_iso(at)))
+        found = []
+        for system, number, difficulty, low, high, perk in finds:
+            found.append(conn.execute(
+                "INSERT INTO leads(user_id,season,system,number,difficulty,pay_low,pay_high,perk,"
+                "found_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (actor.user_id, actor.season_number, system, number, difficulty, low, high, perk,
+                 to_iso(at), to_iso(at + LEAD_LIFETIME))).lastrowid)
+        conn.execute("DELETE FROM leads WHERE user_id=? AND id NOT IN "
+                     "(SELECT id FROM leads WHERE user_id=? ORDER BY id DESC LIMIT ?)",
+                     (actor.user_id, actor.user_id, BOOK_LIMIT))
+        leads = [_row_to_lead(row) for row in conn.execute(
+            "SELECT * FROM leads WHERE user_id=? ORDER BY id", (actor.user_id,)) if row["id"] in found]
+        career_bump(conn, actor.user_id, at, sweeps=1, delta=delta)
+    return leads, busted
+
+
+def resolve_lead(conn: sqlite3.Connection, player: Player, lead: Lead, now: datetime,
+                 rng: random.Random, *, require_preview: bool = False,
+                 delta: ActionDelta | None = None) -> tuple[bool, int, bool]:
+    """Hack one carrier. The number is spent whichever way it goes."""
+    with _action_player(conn, player, now, require_preview=require_preview, delta=delta) as (actor, at):
+        row = conn.execute("SELECT * FROM leads WHERE id=? AND user_id=? AND season=?",
+                           (lead.id, actor.user_id, actor.season_number)).fetchone()
+        if row is None or from_iso(row["expires_at"]) <= at:
+            raise ActionRejected("That number has gone cold. Sweep for fresh carriers; nothing spent.")
+        fresh = _row_to_lead(row)
+        if fresh != lead:
+            raise ActionRejected("That carrier changed. Review your black book; nothing spent.")
+        success, payout, busted = action_lead(actor, fresh, rng)
+        conn.execute("DELETE FROM leads WHERE id=?", (fresh.id,))
+        career_bump(conn, actor.user_id, at, carriers=int(success),
+                    ice=int(success and lead_tier(fresh) == len(LEAD_TIERS) - 1),
+                    jackpots=int(success and fresh.perk == "jackpot"), delta=delta)
+    return success, payout, busted
 
 
 def operation_state(player: Player) -> tuple[int, int, int]:
@@ -2887,7 +3510,18 @@ def dossier_lines(dossier: dict) -> list[str]:
             "A snapshot, not live resources. The rival may have acted or suffered losses since."]
 
 
-def crew_item(choice: CrewChoice) -> tuple[str, str, int, str]:
+def crew_item(choice: CrewChoice, player: Player | None = None) -> tuple[str, str, int, str]:
+    """A kit purchase: key, name, price and what it does.
+
+    The rig is the one entry whose terms depend on who is asking: it is always
+    the tier above the one they run.
+    """
+    if choice.item == "rig":
+        tier = min(len(RIGS) - 1, (player.rig if player is not None else 0) + 1)
+        name, price, rank = RIGS[tier]
+        return ("rig", f"{name} modem", price,
+                f"Rig upgrade: +{rank} Rank on install; every sweep is likelier to find an extra "
+                "carrier and a harder one. Lasts the season.")
     for item in CREW_ITEMS:
         if item[0] == choice.item:
             return item
@@ -2895,7 +3529,9 @@ def crew_item(choice: CrewChoice) -> tuple[str, str, int, str]:
 
 
 def crew_block_reason(player: Player, choice: CrewChoice) -> str | None:
-    item, _, cost, _ = crew_item(choice)
+    item, _, cost, _ = crew_item(choice, player)
+    if item == "rig" and player.rig >= len(RIGS) - 1:
+        return "The top rig is already on your desk. Nothing to purchase."
     if item == player.specialty:
         return "This specialty is already trained. Nothing to purchase."
     if item in SUPPORT_ITEMS and player.support:
@@ -2911,9 +3547,12 @@ def resolve_crew_purchase(conn: sqlite3.Connection, player: Player, now: datetim
     with _action_player(conn, player, now, require_preview=require_preview, delta=delta) as (actor, _):
         if reason := crew_block_reason(actor, choice):
             raise ActionRejected(reason)
-        item, _, price, _ = crew_item(choice)
+        item, _, price, _ = crew_item(choice, actor)
         actor.cash -= price
-        if item in SPECIALTIES:
+        if item == "rig":
+            actor.rig += 1
+            actor.bonus_rank += RIGS[actor.rig][2]
+        elif item in SPECIALTIES:
             actor.specialty = item
         else:
             actor.support = item
@@ -2957,7 +3596,17 @@ def list_exchanges(conn: sqlite3.Connection, viewer_id: int | None = None) -> li
 
 
 # Keep the standings expression aligned with rank_score; ties use stable account IDs.
-_RANK_SQL = f"(crew_recruited_total*10 + exchanges_taken_total*{CAPTURE_RANK} + legacy_rank + control_rank + successful_raids*25 + successful_jobs*15 + successful_operations*30)"
+_RANK_SQL_V11 = f"(crew_recruited_total*10 + exchanges_taken_total*{CAPTURE_RANK} + legacy_rank + control_rank + successful_raids*25 + successful_jobs*15 + successful_operations*30)"
+_RANK_SQL = _RANK_SQL_V11[:-1] + " + bonus_rank)"
+
+
+def _rank_sql(conn: sqlite3.Connection) -> str:
+    """The standings expression this world's own schema can evaluate.
+
+    The SysOp's commands settle a world without upgrading it, so a season can
+    be archived at an older schema that has no `bonus_rank` to add.
+    """
+    return _RANK_SQL if _world_schema_version(conn) >= 12 else _RANK_SQL_V11
 PLAYER_PAGE_SIZE = 10
 
 
@@ -2981,7 +3630,8 @@ def read_player_page(conn: sqlite3.Connection, user_id: int, now: datetime, offs
         parameters = [player.season_number] + ([] if standings else [user_id])
         total = conn.execute("SELECT COUNT(*) FROM players WHERE " + where, parameters).fetchone()[0]
         offset = max(0, min(offset, max(0, (total - 1) // PLAYER_PAGE_SIZE * PLAYER_PAGE_SIZE)))
-        order = f"{_RANK_SQL} DESC, user_id" if standings else "user_id"
+        rank_sql = _rank_sql(conn)
+        order = f"{rank_sql} DESC, user_id" if standings else "user_id"
         rows = conn.execute("SELECT * FROM players WHERE " + where + " ORDER BY " + order + " LIMIT ? OFFSET ?",
                             parameters + [PLAYER_PAGE_SIZE, offset]).fetchall()
         position = None
@@ -2989,7 +3639,7 @@ def read_player_page(conn: sqlite3.Connection, user_id: int, now: datetime, offs
             rank = rank_score(player)
             position = 1 + conn.execute(
                 f"SELECT COUNT(*) FROM players WHERE season_number=? AND "
-                f"({_RANK_SQL}>? OR ({_RANK_SQL}=? AND user_id<?))",
+                f"({rank_sql}>? OR ({rank_sql}=? AND user_id<?))",
                 (player.season_number, rank, rank, user_id),
             ).fetchone()[0]
         return PlayerPage(player, [_row_to_player(row) for row in rows], offset, total, position)
@@ -3159,7 +3809,10 @@ def resolve_root_exchange(
             _save_player(conn, prior)
         if success:
             conn.execute("DELETE FROM meta WHERE key=?", (f"exchange_withdrawal:{exchange.id}",))
-            conn.execute("UPDATE exchanges SET npc_key='', npc_return_at='' WHERE id=?", (exchange.id,))
+            # An operator's home starts its displaced crew's clock; anywhere
+            # else there is nobody to come back.
+            conn.execute("UPDATE exchanges SET npc_key='', npc_return_at=? WHERE id=?",
+                         (to_iso(now + NPC_PUSHBACK_GRACE) if exchange.npc_home else "", exchange.id))
         conn.execute(
             "UPDATE exchanges SET controller_user_id=?, garrison=?, controlled_since=?, income_collected_at=? WHERE id=?",
             (exchange.controller_user_id, exchange.garrison, exchange.controlled_since, exchange.income_collected_at, exchange.id),
@@ -3186,8 +3839,11 @@ def _mark_withdrawal(conn: sqlite3.Connection, exchange_id: int, user_id: int) -
                  (f"exchange_withdrawal:{exchange_id}", str(user_id)))
 
 
-def service_cost(exchange: Exchange) -> int:
-    return 65 if exchange.role == "carrier" else 0
+def service_cost(exchange: Exchange, player: Player | None = None) -> int:
+    """A Carrier Switch recruits for $10 under whatever the boards charge this crew."""
+    if exchange.role != "carrier":
+        return 0
+    return (recruit_cost(player) if player is not None else RECRUIT_COST) - 10
 
 
 def resolve_exchange_service(conn: sqlite3.Connection, player: Player, exchange_id: int,
@@ -3207,7 +3863,7 @@ def resolve_exchange_service(conn: sqlite3.Connection, player: Player, exchange_
             actor.heat -= removed
             outcome = f"Lay Low removed {removed:g} Heat."
         elif exchange.role == "carrier":
-            actor.cash -= 65
+            actor.cash -= service_cost(exchange, actor)
             actor.crew += 1
             actor.crew_recruited_total += 1
             outcome = "Carrier recruitment: one member joins your available crew."
@@ -6043,18 +6699,96 @@ def tier_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, han
 
 # -- 6 and 7. Contract hacks, and an operation's execution ---------------------------
 
-def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, handle: str = "",
-                      margin: int = 0,
-                      contract: int = 0, approach: int = 1, success: bool = True, payout: int = 0,
-                      crew_lost: int = 0, operation: bool = False,
+def dial_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, margin: int = 0,
+                      prefix: str = "555", rig: str = "", finds: list[tuple[str, str, int]] = (),
                       caption: str = "", sub: str = "") -> list[list[SplashOp]]:
+    """The sweep: numbers dialed down a log, most of them nothing, until a
+    modem answers. `finds` is each carrier's number, system and tier."""
     st = _Stage(p, width, height, seed, margin=margin)
     rng, large = st.rng, st.large
     win = (2, 4, 17, st.cols - 5) if large else (1, 1, 9, st.cols - 2)
     inner = win[3] - win[1] - 3
     x = win[1] + 2
-    banner = _HACK_BANNERS[contract % len(_HACK_BANNERS)]
-    st.box(*win, p.phosphor_dim, title=banner, title_style=p.cyan + BOLD)
+    st.box(*win, p.phosphor_dim, title="WAR DIALER", title_style=p.cyan + BOLD)
+    head_row, bar_row = win[0] + 1, win[2] - 1
+    log_rows = list(range(win[0] + (3 if large else 2), bar_row))
+    st.put(head_row, x, _fit(f"ATDT {prefix}-01XX", inner), p.mint + BOLD)
+    if rig and inner >= 34:
+        st.put(head_row, win[3] - 1 - len(rig), rig, p.grey)
+    st.snap()
+    total = max(len(finds) + 5, 6 + len(log_rows))
+    # Where in the sweep each carrier answers: spread out, never the first call.
+    slots = sorted(rng.sample(range(2, total), len(finds))) if finds else []
+    misses = (("NO ANSWER", p.grey), ("BUSY", p.amber), ("VOICE", p.grey), ("FAX", p.cyan),
+              ("NO ANSWER", p.grey), ("DISCONNECTED", p.phosphor_dim))
+    lines: list[tuple[str, str, str, str]] = []
+    bar_w = max(6, min(28, inner - 22))
+    carriers = 0
+
+    def draw(pending: bool) -> None:
+        shown = lines[-len(log_rows):]
+        for row, (number, status, style, detail) in zip(log_rows, shown):
+            last = pending and (number, status, style, detail) == shown[-1]
+            st.clear(row, row, win[1] + 1, win[3])
+            hit = status == "CARRIER" and not last
+            st.put(row, x, number, p.phosphor + BOLD if hit else p.phosphor_dim)
+            st.put(row, x + len(number) + 2, "..." if last else status, p.grey if last else style)
+            if hit and detail:
+                st.put(row, x + len(number) + 11, _fit(detail, inner - len(number) - 11), p.mint)
+
+    for index in range(total):
+        if index in slots:
+            number, system, tier = finds[slots.index(index)]
+            lines.append((number, "CARRIER", p.phosphor + BOLD, system))
+        else:
+            status, style = rng.choice(misses)
+            lines.append((f"{prefix}-{rng.randint(100, 199):04d}", status, style, ""))
+        draw(True)
+        st.snap()
+        draw(False)
+        fill = bar_w * (index + 1) // total
+        st.put(bar_row, x, "SWEEP ", p.grey)
+        st.put(bar_row, x + 6, "█" * fill, p.phosphor)
+        st.put(bar_row, x + 6 + fill, "░" * (bar_w - fill), p.phosphor_dim)
+        if index in slots:
+            carriers += 1
+            st.put(bar_row, x + 8 + bar_w, _fit(counted(carriers, "carrier"), 12), p.amber + BOLD)
+            st.snap()
+            st.snap()
+        st.snap()
+    st.snap()
+    st.caption(caption, sub, p.phosphor + BOLD)
+    st.snap()
+    st.hold()
+    return st.frames
+
+
+# Files a cracked carrier scrolls past: what a login on somebody else's system
+# looked like, one directory listing at a time.
+_LOOT_FILES = ("PASSWD.DAT", "USERS.LST", "PAYROLL.DBF", "MODEMS.CFG", "MEMO-114.TXT",
+               "ROUTES.TBL", "ACCTS.IDX", "DIALOUT.LOG", "BACKUP.ARC", "NOTES.BBS",
+               "CODES.TXT", "SYSLOG.OLD")
+
+
+def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, handle: str = "",
+                      margin: int = 0,
+                      contract: int = 0, approach: int = 1, success: bool = True, payout: int = 0,
+                      crew_lost: int = 0, operation: bool = False,
+                      caption: str = "", sub: str = "", banner: str = "",
+                      prompt: str = "") -> list[list[SplashOp]]:
+    """A login cracked or refused. `banner` and `prompt` are a carrier's own:
+    the name on its window and the line it greets a caller with; a contract
+    gets its board's banner and the stock login."""
+    st = _Stage(p, width, height, seed, margin=margin)
+    rng, large = st.rng, st.large
+    win = (2, 4, 17, st.cols - 5) if large else (1, 1, 9, st.cols - 2)
+    inner = win[3] - win[1] - 3
+    x = win[1] + 2
+    carrier = bool(banner)
+    banner = banner or _HACK_BANNERS[contract % len(_HACK_BANNERS)]
+    st.box(*win, p.phosphor_dim, title=_fit(banner, max(8, inner - 4)), title_style=p.cyan + BOLD)
+    if prompt:
+        st.put(win[0] + 1, x, _fit(prompt, inner), p.cyan)
     st.snap()
 
     if operation:
@@ -6108,7 +6842,13 @@ def hack_scene_frames(p: Palette, width: int, height: int, *, seed: int = 0, han
         steps = 10
         records: list[str] = []
         for tick in range(steps + 1):
-            if contract == 3 and pay_rows:
+            if carrier and pay_rows:
+                record = f"{rng.choice(_LOOT_FILES):<14}{rng.randint(2, 900):>4}K  OK"
+                records = (records + [record])[-len(pay_rows):]
+                for r, line in enumerate(records):
+                    st.put(pay_rows[r], x, _fit(line, inner).ljust(inner),
+                           p.phosphor if r == len(records) - 1 else p.phosphor_dim)
+            elif contract == 3 and pay_rows:
                 st.center(pay_rows[len(pay_rows) // 2], "WIRE " + _tick_text(0, payout, tick, steps).rjust(9),
                           p.amber + BOLD, lo=win[1], hi=win[3] + 1)
             elif contract == 4 and pay_rows:
@@ -6504,8 +7244,8 @@ def next_steps(state: DashboardState, now: datetime) -> list[str]:
     if player.heat + TRADE_WAREZ_HEAT > HEAT_BUST_THRESHOLD:
         safe_at = from_iso(player.heat_updated_at) + timedelta(hours=(player.heat + TRADE_WAREZ_HEAT - HEAT_BUST_THRESHOLD) / HEAT_DECAY_PER_HOUR)
         lines.append(f"Trade without a bust roll in {countdown(safe_at - now)}. Recruitment adds no Heat.")
-    if player.cash < RECRUIT_COST:
-        lines.append(f"Need ${RECRUIT_COST - player.cash} more to recruit. Trade needs no cash; inspect its Heat risk first.")
+    if player.cash < recruit_cost(player):
+        lines.append(f"Need ${recruit_cost(player) - player.cash} more to recruit. Trade needs no cash; inspect its Heat risk first.")
     if player.crew == 1:
         lines.append("Available crew is at the one-member floor. Recruit or use [G] Garrison to withdraw defenders before another capture.")
     if rank_score(player) == 0 and not player.operation_stage and len(lines) == 1:
@@ -6575,6 +7315,53 @@ def dashboard_notes(state: DashboardState, now: datetime) -> list[str]:
     notes.append("[I] Scene is free: crew insignia, NPC dossiers, public bulletins and the latest "
                  "12 completed seasons. [S] Kit trains one specialty and holds one support item.")
     return notes
+
+
+def next_move(state: DashboardState, now: datetime) -> str:
+    """The one thing worth doing next, in a sentence with its key.
+
+    The switchboard's first page says this and nothing else by way of advice:
+    the full list of facts and deadlines is on the pages after it. A caller who
+    is out of something hears about that first, then about the black book,
+    which is where a turn is best spent.
+    """
+    player = state.player
+    if player.turns_used >= TURNS_PER_DAY:
+        refill = countdown(from_iso(player.turn_day_start) + DAY - now) if player.turn_day_start else "soon"
+        return f"Out of turns; refill in {refill}. [E] Map, [B] Rank and [H] Log stay free."
+    if player.heat + TRADE_WAREZ_HEAT > HEAT_BUST_THRESHOLD:
+        return "The line is hot: anything risky rolls for a bust. Wait it out, or [C] recruit."
+    if player.crew == 1:
+        return "One crew member left: [C] recruit before anything risky."
+    for exchange in state.holdings:
+        threat = home_threat(exchange)
+        if threat and threat[2]:
+            return (f"{exchange_short_name(exchange)} is {threat[2]} defence short: {threat[0]} "
+                    "will test it. [G] Garrison posts crew.")
+    if state.book:
+        return (f"{counted(state.book, 'carrier')} in your black book: [D] Dial hacks "
+                f"{'it' if state.book == 1 else 'one'} before it goes cold.")
+    if rank_score(player) == 0 and not state.holdings:
+        return "First night: [D] Dial sweeps for carriers to hack; [X] Root takes a free exchange."
+    return "Your black book is empty: [D] Dial sweeps a prefix for carriers to hack."
+
+
+def today_card(p: Palette, state: DashboardState, now: datetime,
+               width: int) -> tuple[str, list[str]]:
+    """Today's wire and the next move: the switchboard's one card of advice."""
+    rows: list[str] = []
+    heading = "TODAY"
+    if not lines_switched_off():
+        _, name, blurb, effects = line_condition()
+        chip = badge(p, name, style=p.amber if effects else p.grey)
+        if _dlen(chip) + 3 + _dlen(blurb) <= width:
+            rows += compose([chip, sty(p.ink if effects else p.grey, blurb)], width)
+        else:
+            rows += [chip] + prose_rows(p, blurb, width, style=p.ink if effects else p.grey)
+        if _LINE_ENDS is not None and _LINE_ENDS > now:
+            heading += f" {gl('sep')} wire changes in {countdown(_LINE_ENDS - now)}"
+    rows += prose_rows(p, next_move(state, now), width, style=p.mint)
+    return heading, rows
 
 
 def heat_chip(p: Palette, player: Player) -> str:
@@ -6648,6 +7435,8 @@ def dashboard_cards(p: Palette, state: DashboardState, now: datetime,
     operation = ("none" if not player.operation_stage else
                  _fit(JOBS[player.operation_contract][0], 22)
                  + (" - cased" if player.operation_stage == 1 else " - prepared"))
+    book_chip = label_value(p, "BOOK", f"{state.book}/{BOOK_LIMIT}",
+                            style=p.amber if state.book else p.grey)
     # The wide console lays the same facts out as its own instrument column,
     # so the stacked card is only composed for the layout that shows it.
     console = state.scene and _panel_framed(p, width) and width >= CONSOLE_WIDTH
@@ -6658,16 +7447,18 @@ def dashboard_cards(p: Palette, state: DashboardState, now: datetime,
                  heat_chip(p, player)], width)
         + compose([sty(p.grey, "CREW") + " " + dots(p, player.crew, player.crew + posted)
                    + " " + sty(p.ink, f"{player.crew:,} free"),
-                   sty(p.cyan, f"{posted:,} posted")], width)
+                   sty(p.cyan, f"{posted:,} posted"),
+                   label_value(p, "RIG", rig_name(player), style=p.cyan)], width)
         + compose([sty(p.grey, "TURNS") + " " + pips(p, turns_left, TURNS_PER_DAY)
                    + " " + sty(p.ink, f"{turns_left}/{TURNS_PER_DAY}"), refill], width)
         + compose([sty(p.grey, "HOLD") + " " + dots(p, len(state.holdings), 10, cap=10)
                    + " " + sty(p.ink, f"{len(state.holdings)}/10"),
-                   label_value(p, "income", f"${income:,}/hr", style=p.amber)], width)
+                   label_value(p, "income", f"${income:,}/hr", style=p.amber),
+                   book_chip], width)
         + compose([shield_chip(p, player, now),
                    label_value(p, "NEW", f"{state.new_events}",
-                               style=p.amber if state.new_events else p.grey)], width)
-        + compose([label_value(p, "OPS", operation, style=p.cyan),
+                               style=p.amber if state.new_events else p.grey),
+                   label_value(p, "OPS", operation, style=p.cyan),
                    label_value(p, "KIT", f"{player.specialty or 'untrained'}"
                                f" / {player.support or 'empty'}", style=p.cyan)], width)
     )
@@ -6699,6 +7490,7 @@ def dashboard_cards(p: Palette, state: DashboardState, now: datetime,
             + row("HOLD", dots(p, len(state.holdings), 10, cap=10) + " "
                   + sty(p.ink, f"{len(state.holdings)}/10"),
                   label_value(p, "income", f"${income:,}/hr", style=p.amber))
+            + row("RIG", sty(p.cyan, rig_name(player)), book_chip)
             + compose([shield_chip(p, player, now),
                        label_value(p, "NEW", f"{state.new_events}",
                                    style=p.amber if state.new_events else p.grey)], left_w)
@@ -6713,23 +7505,32 @@ def dashboard_cards(p: Palette, state: DashboardState, now: datetime,
                              + " " + sty(p.amber, f"${sum(e.income_per_hour for e in state.scene):,}/hr")],
                             right_w)
         scene_rows = ring + [""] + [" " * 3 + yield_row[0]] if yield_row else ring
-        cards += [("", identity + rank_row),
+        cards += [("", identity + rank_row), today_card(p, state, now, width),
                   (Split("CREW", "THE SCENE", left_w), split_rows(p, instruments, scene_rows, left_w))]
     else:
-        cards += [("", identity + rank_row), ("", resources)]
+        cards += [("", identity + rank_row), today_card(p, state, now, width), ("CREW", resources)]
     if state.scene and not console:
         ring = (switch_ring(p, state.scene, player.user_id, width)
                 or compact_scene(p, state.scene, player.user_id, width))
         cards.append(("THE SCENE", ring))
     cards.append(("FEED", feed(p, state.recent, width, limit=4)))
-    cards.append(("ORDERS", prose_card(p, next_steps(state, now), width)))
-    notes = [note for note in dashboard_notes(state, now) if note not in reset]
+    # The pages after the first carry the detail behind the TODAY card. An
+    # operation's budget is said only while one is saved, and the standing
+    # rules (the awards, what [I] Scene holds) are Help's to state: printed on
+    # every visit they were the two walls of prose a caller paged past.
+    orders = [line for line in next_steps(state, now)
+              if player.operation_stage or not line.startswith("New operation:")]
+    if orders:
+        cards.append(("ORDERS", prose_card(p, orders, width)))
+    notes = [note for note in dashboard_notes(state, now)
+             if note not in reset and note != SEASON_AWARDS and not note.startswith("[I] Scene is free")]
     cards.append(("SEASON", prose_card(p, notes, width)))
     return cards
 
 
 # key, label, and the label a narrow terminal gets instead.
-SWITCHBOARD_KEYS = (("T", "Trade", "Trade"), ("C", "Crew", "Crew"), ("J", "Job", "Job"),
+SWITCHBOARD_KEYS = (("D", "Dial", "Dial"),
+                    ("T", "Trade", "Trade"), ("C", "Crew", "Crew"), ("J", "Job", "Job"),
                     ("R", "Raid", "Raid"), ("X", "Root", "Root"), ("G", "Garrison", "Gar"),
                     ("S", "Kit", "Kit"), ("O", "Ops", "Ops"), ("B", "Rank", "Rank"),
                     ("E", "Map", "Map"), ("V", "Rivals", "Rival"), ("H", "Log", "Log"),
@@ -6757,7 +7558,18 @@ def draw_dashboard(p: Palette, state: DashboardState, now: datetime, width: int,
     width = max(1, width - 1)
     bar = switchboard_bar(p, width, max(1, min(2, height - 5)))
     capacity = max(1, height - len(bar) - 1 - frame_cost(p, width))
-    pages = paginate_cards(dashboard_cards(p, state, now, _panel_width(p, width)), capacity)
+    inner = _panel_width(p, width)
+    cards = dashboard_cards(p, state, now, inner)
+    pages = paginate_cards(cards, capacity)
+    if len(pages) == 1 and not p.fast and wordmark_fits(p, inner):
+        # A terminal tall enough to hold the whole switchboard with rows to
+        # spare wears the masthead on it: the wordmark used to scroll away
+        # with the login, and a 132x40 console left half its glass dark.
+        mast = [center(row, inner) for row in wordmark_rows(p)] + [
+            center(sty(p.mint, _fit(SPLASH_TAGLINE, inner)), inner)]
+        crowned = paginate_cards([("", mast)] + cards, capacity)
+        if len(crowned) == 1:
+            pages = crowned
     page_index = max(0, min(page_index, len(pages) - 1))
     out(f"{ESC}[2J{ESC}[H")
     draw_frame(p, width, pages[page_index], title="SWITCHBOARD",
@@ -6774,12 +7586,14 @@ def show_text_pages(p: Palette, title: str, paragraphs: list[str], width: int, h
                     *, more_before: bool = False, more_after: bool = False,
                     start_last: bool = False, onboarding: bool = False, accept: bool = False,
                     cards: list[tuple[str, list[str]]] | None = None,
-                    trailing: str = "", motion: bool = False) -> str:
+                    trailing: str = "", motion: bool = False, again: bool = False) -> str:
     """Content first, bounded terminal pages; return an edge key to fetch another batch.
 
     `cards` is how a rebuilt screen hands over rows its own components already
     styled; `paragraphs` is the prose path, which styles what it wraps instead
-    of flattening it and coloring the whole row from outside.
+    of flattening it and coloring the whole row from outside. `again` is for a
+    result a caller may want straight back: its last page offers `[A] Again`
+    beside the any-key continue, and returns "A" for it.
     """
     width = max(1, width - 1)
     inner = _panel_width(p, width)
@@ -6788,6 +7602,8 @@ def show_text_pages(p: Palette, title: str, paragraphs: list[str], width: int, h
         blocks = [("", [sty(p.grey, "Nothing to show yet.")])]
     bars = {
         "onboarding": [sty(p.grey, "Press any key to continue...")],
+        "again": [keycap(p, "A") + " " + sty(p.mint, "Again")
+                  + sty(p.grey, "   any other key continues")],
         "accept": key_bar(p, ACCEPT_BAR, width, 1),
         "pages": key_bar(p, TEXT_BAR, width, 1),
     }
@@ -6807,8 +7623,9 @@ def show_text_pages(p: Palette, title: str, paragraphs: list[str], width: int, h
         else:
             for row in rows:
                 out_line(row)
-        bar = bars["onboarding"] if onboarding else (
-            bars["accept"] if accept and index == len(pages) - 1 else bars["pages"])
+        last = index == len(pages) - 1
+        bar = (bars["again"] if again and last else bars["onboarding"]) if onboarding else (
+            bars["accept"] if accept and last else bars["pages"])
         for row in bar[:-1]:
             out_line(row)
         out_prompt(bar[-1])
@@ -6821,7 +7638,7 @@ def show_text_pages(p: Palette, title: str, paragraphs: list[str], width: int, h
             out_line()
         else:
             key = read_menu_choice("NPBQ" + ("A" if accept and index == len(pages) - 1 else ""))
-        if key == "A":
+        if key == "A" and (not onboarding or (again and last)):
             return "A"
         if key in ("B", "Q"):
             return "B"
@@ -6851,6 +7668,21 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "[B] Rank: standings. [E] Map: territory. [V] Rivals: eligibility. [H] Log: retained "
         "events. All browsing is free.",
     )),
+    ("WAR DIALING", (
+        f"[D] Dial opens your black book. [S] Sweep spends one turn and {DIAL_HEAT} Heat dialing a "
+        "prefix; one carrier always answers, often two.",
+        "Each carrier is one system you can hack: soft, warm, hard or ice. Its difficulty is sized "
+        "on your whole crew when it is found; your odds use the crew you have available when you "
+        "hack it. Harder tiers pay more cash and "
+        + "/".join(str(tier[5]) for tier in LEAD_TIERS) + " Rank.",
+        f"One attempt each: win or lose, the number is burned. Unused numbers go cold after "
+        f"{LEAD_LIFETIME // timedelta(hours=1)} hours. The book holds {BOOK_LIMIT}; a sweep into a "
+        "full book drops the oldest.",
+        "Some carriers carry a perk, shown before you commit: a recruit, a cold trail that removes "
+        "Heat, calling-card codes (a free Burner Kit) or a doubled payout.",
+        "[S] Kit sells rigs. Each faster modem is worth Rank on install and makes every sweep "
+        "likelier to find an extra carrier and a harder one. A rig lasts the season.",
+    )),
     ("TURNS AND HEAT", (
         f"Each action costs one of {TURNS_PER_DAY} turns. The rolling 24-hour window starts with "
         "your first action.",
@@ -6858,12 +7690,15 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "cash/crew and reset Heat. Heat decays over time.",
         "No turns? Browse and plan until refill. No cash? [T] Trade has no cash cost. One "
         "available crew left? Recruit or withdraw defenders before capturing again.",
+        "The switchboard's TODAY card names the day's line condition: a bonus or a trade that "
+        "applies to every crew until the wire changes. A season's first day is always clear.",
     )),
     ("MONEY AND CREW", (
         f"[T] Trade Warez: quick cash, ${TRADE_WAREZ_RANGE[0]}-${TRADE_WAREZ_RANGE[1]}; after "
         f"{TRADE_FULL_PAYOUTS} in one turn-day the top falls ${TRADE_TAPER_STEP} a Trade, to "
         f"${TRADE_TAPER_FLOOR}. "
-        f"[C] Crew Recruit: ${RECRUIT_COST} buys +1 crew.",
+        f"[C] Crew Recruit: ${RECRUIT_COST} buys +1 crew, ${RECRUIT_STEP} more for each member "
+        f"past {RECRUIT_FLAT_CREW}.",
         "[S] Kit: train one crew specialty or buy one consumable support item. Each costs cash and "
         "one turn; preview before Act. Both reset each season.",
         "Capture commits one available member to its garrison. Assigned crew defend only that "
@@ -6903,10 +7738,12 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "stops income.",
         "Displaced defenders return to their owner's available crew after capture. Busts and "
         "failed attacks affect available crew, not stationed defenders.",
-        "NPC crews are labeled on [E] Map: three fixed home exchanges, 2/4/6 defenders. They never "
-        "attack callers or take human holdings and earn no income or Rank. An abandoned home "
-        "returns to its NPC after 24 hours. Jobs and operations remain available with no human "
-        "rivals.",
+        "NPC crews are labeled on [E] Map: three fixed home exchanges, 2/4/6 defenders. They raid "
+        "nobody and earn no income or Rank. An abandoned home returns to its NPC after 24 hours. "
+        "Jobs, operations and war dialing remain available with no human rivals.",
+        f"Take an NPC home and its crew comes back for it: from {NPC_PUSHBACK_GRACE // timedelta(hours=1)} "
+        "hours after the capture, once a day, they test a defence weaker than their crew. Match "
+        "their crew (2, 4 or 6, counting a Carrier Switch's security) and they never try.",
     )),
     ("SEASONS", (
         f"Rank only climbs during a season. Every {SEASON.days} days, cash, crew, Heat, turns, "
@@ -6932,34 +7769,39 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "[I] Scene / Display offers ASCII decorations, monochrome and Fast mode. Settings survive "
         "seasons. Fast skips optional art, flavour and motion while keeping every result and "
         "stake; any key skips motion anywhere it plays.",
+        "[I] Scene / Your rap sheet keeps your lifetime record and the badges you have earned. It "
+        "survives every season and grants nothing but the record.",
         "[N] Next/[P] Prev page; [B] Back leaves a screen; [Q] Quit leaves the game from the "
         "switchboard. Use separate single keys.",
     )),
 )
 
 
+# What a new caller is handed before the switchboard: the fantasy, three keys
+# to press tonight and the two rules that shape every decision. It used to be
+# four cards of rules with no reason to care about any of them; the rules are
+# all still one key away in Help.
 FIRST_VISIT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("THE SCENE", (
-        f"Welcome to the shared BBS scene. Start with ${STARTING_CASH}, {STARTING_CREW} crew and "
-        f"{TURNS_PER_DAY} turns.",
-        "Inspect [E] Map first. [X] Root previews unclaimed territory; [T] Trade earns cash for "
-        "[C] Crew recruitment.",
+    ("THE LINE IS OPEN", (
+        f"You have a modem, a handle, ${STARTING_CASH} and a crew of {STARTING_CREW}. Ten phone "
+        "exchanges hum out there, and every crew on this board wants them.",
     )),
-    ("TERRITORY", (
-        "Capture assigns one crew member to defense. [G] Garrison reinforces or withdraws; keep "
-        "one member available.",
+    ("YOUR FIRST NIGHT", (
+        "[D] Dial sweeps a prefix for carriers. Each one is a system you can hack once, for cash "
+        "and Rank.",
+        "[X] Root takes an exchange. It pays you by the hour, even while you are logged off.",
+        "[C] Crew recruits. More crew means better odds on everything.",
     )),
-    ("EVERY ACTION PREVIEWS", (
-        "Every action shows costs and risk before Act. Back cancels for free. Jobs and defended "
-        "contests are harder with a small crew.",
-        "High Heat? Wait for cooldown or recruit without a bust roll. No cash? Trade needs none; "
-        "preview its Heat risk.",
+    ("HOW IT WORKS", (
+        f"Every action costs one of {TURNS_PER_DAY} turns a day and shows its odds and stakes "
+        "before you commit. Backing out is always free.",
+        f"Heat is federal attention. Past {HEAT_BUST_THRESHOLD:g} you can be busted; it cools "
+        "while you are away.",
     )),
-    ("WHEN YOU RUN DRY", (
-        "No turns? Browse Rank, Map, Rivals and Log free. The switchboard shows your refill and "
-        "season deadline.",
-        "Use separate single keys. [?] Help has the full rules; [Q] Quit leaves from the "
-        "switchboard.",
+    ("THE SEASON", (
+        f"Rank only climbs. Every {SEASON.days} days the Feds sweep the scene and every crew "
+        "starts over; your medals and rap sheet stay.",
+        "[?] Help has every rule. [Q] Quit hangs up. Use separate single keys.",
     )),
 )
 
@@ -7088,6 +7930,40 @@ def insignia_rows(p: Palette, handle: str, key: str, current: str, width: int) -
     return rows
 
 
+def rap_sheet_cards(p: Palette, career: dict, player: Player,
+                    width: int) -> list[tuple[str, list[str]]]:
+    """A caller's whole career: the counts, the high-water marks and the badge wall.
+
+    Unearned badges are listed with what earns them, dimmed: a wall of blanks
+    tells a caller nothing, and a list of goals is the reason to come back.
+    """
+    stats, badges = career["stats"], career["badges"]
+    symbol = INSIGNIA[player.insignia][0]
+    head = compose([sty(p.mint + BOLD, _fit(_event_plain(player.handle), max(8, width // 2)))
+                    + " " + sty(p.phosphor, gl("ins_l") + symbol + gl("ins_r")),
+                    label_value(p, "badges", f"{len(badges)}/{len(BADGES)}", style=p.amber),
+                    sty(p.grey, "survives every season")], width)
+    record = compose([label_value(p, label, f"{stats.get(key, 0):,}",
+                                  style=p.ink if stats.get(key, 0) else p.grey)
+                      for key, label in CAREER_COUNTS], width)
+    best_rank = stats.get("best_rank", 0)
+    peaks = compose([label_value(p, "best season rank", f"{best_rank:,}", style=p.mint),
+                     badge(p, _fit(tier_name(best_rank).upper(), 16)),
+                     label_value(p, "most exchanges held", str(stats.get("most_held", 0)), style=p.ink),
+                     label_value(p, "largest crew", f"{stats.get('most_crew', 0):,}", style=p.ink),
+                     label_value(p, "best rig", RIGS[max(0, min(stats.get("best_rig", 0), len(RIGS) - 1))][0],
+                                 style=p.cyan)], width)
+    wall: list[str] = []
+    for key, name, how, _, _ in BADGES:
+        if key in badges:
+            wall += compose([badge(p, name, style=p.amber), sty(p.ink, how),
+                             sty(p.grey, badges[key])], width)
+        else:
+            wall += compose([sty(p.phosphor_dim, gl("ins_l") + name + gl("ins_r")),
+                             sty(p.grey, how)], width)
+    return [("", head), ("RECORD", record), ("HIGH-WATER MARKS", peaks), ("BADGES", wall)]
+
+
 def do_scene(p: Palette, conn: sqlite3.Connection, player: Player, width: int, height: int) -> None:
     """The free hub. Every screen it opens comes back to it; Back here leaves."""
     while True:
@@ -7101,8 +7977,8 @@ def do_scene(p: Palette, conn: sqlite3.Connection, player: Player, width: int, h
                          badge(p, _fit(tier_name(rank).upper(), 16)),
                          label_value(p, "rank", f"{rank:,}", style=p.mint),
                          label_value(p, "kit", player.specialty or "untrained", style=p.cyan)], inner)
-        # One row an entry: a hub is a list of destinations, and every one of the
-        # seven has to be selectable on the first page of a twelve-row terminal.
+        # One row an entry: a hub is a list of destinations, and the first
+        # seven are all selectable on the first page of a twelve-row terminal.
         # Each screen explains itself once it is open.
         key = pick_record_page(p, "BBS SCENE", [
             ([f"Crew insignia: {name}"], True),
@@ -7112,6 +7988,7 @@ def do_scene(p: Palette, conn: sqlite3.Connection, player: Player, width: int, h
             (["Your season reports"], True),
             (["Hall of Fame"], True),
             (["Display"], True),
+            (["Your rap sheet"], True),
         ], width, height, before=[("", crest)], heading="FREE")
         if key in "BQ":
             return
@@ -7153,8 +8030,8 @@ def do_scene(p: Palette, conn: sqlite3.Connection, player: Player, width: int, h
                                        + when(from_iso(exchange.npc_return_at)),
                                        inner, style=p.grey)
                 elif exchange.controller_user_id is not None:
-                    rows += prose_rows(p, "Displaced from home. The NPC cannot take a human holding.",
-                                       inner, style=p.grey)
+                    rows += prose_rows(p, "Displaced from home. Once a day they test a defence "
+                                       "weaker than their crew.", inner, style=p.grey)
                 else:
                     rows += prose_rows(p, "Defending home. Capture previews show the actual stakes.",
                                        inner, style=p.grey)
@@ -7178,6 +8055,9 @@ def do_scene(p: Palette, conn: sqlite3.Connection, player: Player, width: int, h
             show_season_recognition(p, conn, player.user_id, width, height, hall=True)
         elif key == "7":
             do_display(p, conn, player.user_id, width, height)
+        elif key == "8":
+            show_text_pages(p, "RAP SHEET", [], width, height,
+                            cards=rap_sheet_cards(p, read_career(conn, player.user_id), player, inner))
 
 
 DISPLAY_KEYS = ('ascii_art', 'monochrome', 'fast')
@@ -7553,11 +8433,18 @@ def exchange_detail_cards(p: Palette, exchange: Exchange, player: Player | None,
                            "[X] Root contests it."), width, style=p.grey)
     cards = [("", head), ("DEFENCE", defence_rows), ("TERMS", terms)]
     if exchange.npc_home:
-        notes = [f"NPC home: {NPC_NAMES[exchange.npc_home]}. No human account, income or Rank; "
-                 "it never attacks callers."]
+        notes = [f"NPC home: {NPC_NAMES[exchange.npc_home]}, crew of {NPC_CREWS[exchange.npc_home]}. "
+                 "No human account, income or Rank. It raids nobody, but it comes back for a "
+                 "home whose defence is weaker than its crew."]
         if exchange.npc_return_at and exchange.controller_user_id is None:
             notes.append("Returns if still unclaimed at "
                          + when(from_iso(exchange.npc_return_at)) + ".")
+        threat = home_threat(exchange)
+        if threat:
+            notes.append((f"Defence is {threat[2]} short: the operators test it"
+                          if threat[2] else "Defence matches their crew: no test is due")
+                         + (" " + when(from_iso(exchange.npc_return_at)) + "."
+                            if exchange.npc_return_at else "."))
         cards.append(("NEUTRAL OPERATOR", prose_card(p, notes, width)))
     return cards
 
@@ -7788,8 +8675,8 @@ def action_block_reason(action: str, player: Player, target: Exchange | Player |
         refill = from_iso(player.turn_day_start) + DAY
         reasons.append("No turns. Refill at " + when(refill) +
                        ". Back to the switchboard for free Rank, Map, Rivals and Log browsing.")
-    if action == "recruit" and player.cash < RECRUIT_COST:
-        reasons.append(f"Need ${RECRUIT_COST - player.cash} more cash to recruit. Trade needs no cash; preview its Heat risk first.")
+    if action == "recruit" and player.cash < recruit_cost(player):
+        reasons.append(f"Need ${recruit_cost(player) - player.cash} more cash to recruit. Trade needs no cash; preview its Heat risk first.")
     if action == "root" and player.crew < 2:
         reasons.append("Need 2 available crew: one to hold the exchange and one to remain available. Recruit or use [G] Garrison to withdraw defenders.")
     if action == "root" and isinstance(target, Exchange) and player.cash < capture_cost(target):
@@ -7797,21 +8684,25 @@ def action_block_reason(action: str, player: Player, target: Exchange | Player |
     if action == "service":
         if not isinstance(target, Exchange) or target.controller_user_id != player.user_id or target.role not in EXCHANGE_ROLES:
             reasons.append("This service requires ownership of the exchange.")
-        elif player.cash < service_cost(target):
-            reasons.append(f"Need ${service_cost(target) - player.cash} more for carrier recruitment.")
+        elif player.cash < service_cost(target, player):
+            reasons.append(f"Need ${service_cost(target, player) - player.cash} more for carrier recruitment.")
     return " ".join(reasons) or None
 
 
 def action_preview_lines(action: str, player: Player, target: Player | Exchange | JobChoice | CrewChoice | None = None, *, operation: bool = False) -> list[str]:
-    cost = service_cost(target) if action == "service" else crew_item(target)[2] if action == "crew" else RECRUIT_COST if action == "recruit" else capture_cost(target) if action == "root" else 0
+    cost = action_cost(action, player, target)
     lines = [f"Season {player.season_number}; turns {TURNS_PER_DAY - player.turns_used}/{TURNS_PER_DAY}; cash ${player.cash:,}",
              f"Cost: 1 turn, ${cost} cash. Back spends nothing."]
     if reason := action_block_reason(action, player, target):
         lines.append("Unavailable: " + reason)
     if action == "crew":
-        _, name, _, effect = crew_item(target)
-        lines += [f"Purchase: {name}. {effect}", f"Current specialty: {player.specialty or 'none'}; support: {player.support or 'empty'}.",
-                  "One turn; no Heat, bust roll or Rank. Specialty replaces prior training; support cannot stack. Both reset each season."]
+        _, name, _, effect = crew_item(target, player)
+        lines.append(f"Purchase: {name}. {effect}")
+        if target.item == "rig":
+            lines += [f"Current rig: {rig_name(player)}.", "One turn; no Heat or bust roll."]
+        else:
+            lines += [f"Current specialty: {player.specialty or 'none'}; support: {player.support or 'empty'}.",
+                      "One turn; no Heat, bust roll or Rank. Specialty replaces prior training; support cannot stack. Both reset each season."]
         if reason := crew_block_reason(player, target):
             lines.append("Unavailable: " + reason)
         return lines
@@ -7824,7 +8715,24 @@ def action_preview_lines(action: str, player: Player, target: Player | Exchange 
             return lines + ["Guaranteed +1 available crew and +10 Rank. No Heat, bust roll or support consumption."]
     job = job_terms(target if isinstance(target, JobChoice) else JobChoice()) if action == "job" else None
     heat = {"trade": TRADE_WAREZ_HEAT, "recruit": 0, "job": job[4] if job else JOB_HEAT,
-            "raid": RAID_HEAT, "root": exchange_terms(target)[2] if action == "root" else ROOT_EXCHANGE_HEAT, "service": 4}[action]
+            "raid": RAID_HEAT, "root": exchange_terms(target)[2] if action == "root" else ROOT_EXCHANGE_HEAT, "service": 4,
+            "sweep": DIAL_HEAT, "carrier": lead_terms(target)[3] if action == "carrier" else 0}[action]
+    if action == "sweep":
+        lines += [f"Sweep a prefix on your {rig_name(player)} rig. One carrier always answers, often two.",
+                  f"Each goes into your black book ({BOOK_LIMIT} numbers; a full book drops its oldest) "
+                  f"and goes cold after {LEAD_LIFETIME // timedelta(hours=1)} hours.",
+                  "No cash, crew or Rank at stake."]
+    elif action == "carrier":
+        name, difficulty, (lo, hi), _, award, loss = lead_terms(target)
+        lines += [f"Carrier: {name} at {target.number}; {LEAD_TIERS[lead_tier(target)][0]} tier.",
+                  f"Success: {success_chance(player.crew, difficulty):.1%}; difficulty {difficulty}, "
+                  f"available crew {player.crew}.",
+                  f"Success pays ${lo:,}-${hi:,} and +{award} Rank before any bust."]
+        if target.perk:
+            lines.append(f"{LEAD_PERKS[target.perk][0].title()}: {LEAD_PERKS[target.perk][1]}")
+        lines += [f"Failure loses {min(loss, player.crew - 1)} available crew before any bust; no cash penalty.",
+                  "One attempt: win or lose, the number is burned.",
+                  "Goes cold " + when(from_iso(target.expires_at)) + "."]
     if action == "trade":
         low, high = trade_payout_range(player)
         lines.append(f"Gross payout: ${low}-${high}, before any bust loss.")
@@ -7864,13 +8772,13 @@ def action_preview_lines(action: str, player: Player, target: Player | Exchange 
                   f"Capture Rank is once per exchange per season. Holding earns +1 Rank per {CONTROL_RANK_HOURS} exchange-hours; the ${capture_cost(target)} attempt cost applies win or lose.",
                   f"Success assigns 1 crew to defense, leaving {player.crew - 1} available before any bust. [G] Garrison manages defenders.",
                   f"Failure loses {min(1, player.crew - 1)} crew before any bust."]
-    if action == "job" and player.specialty == "fixers":
+    if action in {"job", "carrier"} and player.specialty == "fixers":
         lines.append("Fixers: ordinary failure recovers $20 before any bust, without Rank.")
-    if action in {"job", "raid", "root"} and player.support == "burner":
+    if action in {"job", "raid", "root", "carrier"} and player.support == "burner":
         lines.append("Burner Kit: removes up to 10 added Heat; consumed by this attempt, win or lose.")
     if player.support == "stash":
         lines.append("Cash Stash: consumed only if a bust occurs; that bust takes 10% cash instead of 25%.")
-    heat = adjusted_heat(player, action, heat)
+    heat = adjusted_heat(player, "job" if action == "carrier" else action, heat)
     if action != "recruit":
         projected = player.heat + heat
         chance = min(HEAT_BUST_CHANCE_CAP, max(0, projected - HEAT_BUST_THRESHOLD) * HEAT_BUST_CHANCE_PER_POINT)
@@ -7891,9 +8799,9 @@ def update_display_player(p: Palette, player: Player, refreshed: Player, width: 
 
 
 def action_cost(action: str, player: Player, target) -> int:
-    return (service_cost(target) if action == "service" else
-            crew_item(target)[2] if action == "crew" else
-            RECRUIT_COST if action == "recruit" else
+    return (service_cost(target, player) if action == "service" else
+            crew_item(target, player)[2] if action == "crew" else
+            recruit_cost(player) if action == "recruit" else
             capture_cost(target) if action == "root" else 0)
 
 
@@ -7903,8 +8811,10 @@ def action_odds(action: str, player: Player, target, *, operation: bool = False)
     A raid's odds are deliberately private -- the rival's crew strength is not
     public -- so the preview draws no bar rather than a made-up one.
     """
-    if action in ("trade", "recruit", "crew", "service"):
+    if action in ("trade", "recruit", "crew", "service", "sweep"):
         return 1.0
+    if action == "carrier" and isinstance(target, Lead):
+        return success_chance(player.crew, target.difficulty)
     if action == "job":
         difficulty = job_terms(target if isinstance(target, JobChoice) else JobChoice())[1]
         return min(.9, success_chance(player.crew, difficulty) + (.15 if operation else 0))
@@ -7927,9 +8837,11 @@ def preview_heat(action: str, player: Player, target, *, operation: bool = False
         if target.role == "pbx":
             return -min(15, player.heat)
         return adjusted_heat(player, action, 4) if target.role == "hub" else 0
+    if action == "carrier" and isinstance(target, Lead):
+        return adjusted_heat(player, "job", lead_terms(target)[3])
     job = job_terms(target if isinstance(target, JobChoice) else JobChoice()) if action == "job" else None
     base = {"trade": TRADE_WAREZ_HEAT, "recruit": 0, "job": job[4] if job else JOB_HEAT,
-            "raid": RAID_HEAT,
+            "raid": RAID_HEAT, "sweep": DIAL_HEAT,
             "root": exchange_terms(target)[2] if action == "root" and isinstance(target, Exchange)
             else ROOT_EXCHANGE_HEAT,
             "service": 0, "crew": 0, "recon": 0}.get(action, 0)
@@ -7991,7 +8903,12 @@ def stakes_cards(p: Palette, action: str, player: Player, target, width: int, *,
     # line the card above already says.
     if terms is None:
         terms = action_preview_lines(action, player, target, operation=operation)
-    terms = [line for line in unrepeated_terms(terms, blocked) if not line.startswith("Season ")]
+    # The head card says the cost and the STAKES card draws the Heat sum and its
+    # bust chance, so the three sentences repeating them are not printed again:
+    # they were a third of every preview's reading for no new fact.
+    terms = [line for line in unrepeated_terms(terms, blocked)
+             if not line.startswith(("Season ", "Cost: 1 turn, ", "Heat decays while you wait"))
+             and not (line.startswith("Heat: ") and "bust risk" in line)]
     cards.append(("TERMS", prose_card(p, terms + list(extra), width)))
     return cards
 
@@ -8020,21 +8937,69 @@ def confirm_action(p: Palette, conn: sqlite3.Connection, player: Player, action:
         for dossier in read_dossiers(conn, player.user_id, now_utc()):
             if dossier["target"] == target.user_id:
                 extra += dossier_lines(dossier)
-    cards = stakes_cards(p, action, player, target, _panel_width(p, max(1, width - 1)), extra=extra)
+    inner = _panel_width(p, max(1, width - 1))
+    cards = stakes_cards(p, action, player, target, inner, extra=extra)
+    if action == "carrier" and isinstance(target, Lead) and not p.fast:
+        # The line a caller is about to pick up: the number, the handshake at
+        # their rig's speed, and the system's own greeting waiting for an answer.
+        speed = RIG_SPEEDS[max(0, min(player.rig, len(RIG_SPEEDS) - 1))]
+        cards.insert(1, ("THE LINE", [
+            sty(p.mint + BOLD, _fit(f"ATDT {target.number}", inner)),
+            sty(p.phosphor, _fit(f"CONNECT {speed}", inner)),
+            sty(p.cyan, _fit(LEAD_SYSTEMS[target.system][2], max(1, inner - 2)))
+            + " " + sty(p.phosphor + BOLD, gl("cursor"))]))
     return show_text_pages(p, action.upper() + " PREVIEW", [], width, height,
                            cards=cards, accept=available) == "A"
+
+
+def badge_rows(p: Palette, keys: list[str], width: int) -> list[str]:
+    """Badges just earned, each as its chip and how it was won."""
+    rows: list[str] = []
+    for key, name, how, _, _ in BADGES:
+        if key in keys:
+            rows += compose([badge(p, name, style=p.amber), sty(p.ink, how)], width)
+    return rows
+
+
+# One closing line under a result's headline, by how the turn went. The first
+# of each is the line every result used to end on; the rest are there so the
+# fifteenth turn of a night does not read like the first.
+RESULT_FLAVOUR = {
+    "bust": ("Sirens cut through the carrier tone.",
+             "Somebody talked. The door comes off its hinges.",
+             "Unmarked sedans on the street. The Feds were listening."),
+    "rank": ("A clean signal carries your crew's name across the boards.",
+             "Word spreads from board to board before the line even drops.",
+             "By morning the handle is on every message base in the area code.",
+             "Somewhere a sysop reads the log twice and whistles."),
+    "quiet": ("The line goes quiet as the crew closes the log.",
+              "Dial tone. The crew wipes the session and moves on.",
+              "The modem clicks off. Nobody was ever here.",
+              "Static, then silence. The night is still young."),
+}
+
+
+def result_flavour(player: Player | None, delta: ActionDelta, busted: bool) -> str:
+    """The closing line for this turn: chosen by the turn, so it cannot be rerolled."""
+    pool = RESULT_FLAVOUR["bust" if busted else "rank" if delta.rank > 0 else "quiet"]
+    if player is None:
+        return pool[0]
+    return pool[_scene_seed(player.handle, player.season_number, player.turns_used,
+                            rank_score(player)) % len(pool)]
 
 
 def show_action_result(p: Palette, headlines: list[str], delta: ActionDelta, busted: bool,
                        width: int, height: int, *, player: Player | None = None,
                        scene: Callable[[], list[list[SplashOp]]] | None = None,
-                       success: bool | None = None) -> None:
+                       success: bool | None = None,
+                       cards: list[tuple[str, list[str]]] = (), again: bool = False) -> bool:
     """The receipt for a committed action. A scene for it -- the action's own,
     a bust in its place, a promotion after -- opens it when one may play;
     otherwise the carrier sweep does.
 
     `success` is the roll the action already made, for the stamp at the top:
-    None for an action that had no roll to win or lose."""
+    None for an action that had no roll to win or lose. `again` offers the same
+    action's preview straight back; True means the caller asked for it."""
     inner = _panel_width(p, max(1, width - 1))
     if not play_scenes(p, width, height, outcome_scenes(p, player, delta, busted, headlines,
                                                         width, height, scene)):
@@ -8043,10 +9008,7 @@ def show_action_result(p: Palette, headlines: list[str], delta: ActionDelta, bus
     stamp = outcome_stamp(p, success, busted, inner) if not p.fast and height >= 20 else []
     rows = stamp + prose_card(p, headlines, inner)
     if not p.fast:
-        rows += prose_rows(p, "Sirens cut through the carrier tone." if busted else
-                           "A clean signal carries your crew's name across the boards."
-                           if delta.rank > 0 else "The line goes quiet as the crew closes the log.",
-                           inner, style=p.grey)
+        rows += prose_rows(p, result_flavour(player, delta, busted), inner, style=p.grey)
     if busted:
         rows.append(sty(p.alarm + BOLD,
                         _fit("*** BUSTED *** Heat reset; losses included below.", inner)))
@@ -8066,8 +9028,10 @@ def show_action_result(p: Palette, headlines: list[str], delta: ActionDelta, bus
         sty(p.grey, "HEAT") + " " + signed(-delta.heat, f"{delta.heat:+.1f}"),
         label_value(p, "turns spent", str(delta.turns), style=p.ink),
     ], inner)
-    show_text_pages(p, "ACTION RESULT", [], width, height,
-                    cards=[("", rows), ("NET", net)], onboarding=True, motion=True)
+    earned = [("BADGE EARNED", badge_rows(p, delta.badges, inner))] if delta.badges else []
+    return show_text_pages(p, "ACTION RESULT", [], width, height,
+                           cards=[("", rows), *cards, *earned, ("NET", net)], onboarding=True,
+                           motion=True, again=again) == "A"
 
 
 PICK_KEYS = "1234567890"
@@ -8117,7 +9081,8 @@ def pick_record_page(p: Palette, title: str, records: list[tuple[list[str], bool
                      height: int, *, more_before: bool = False, more_after: bool = False,
                      start_last: bool = False, before: list[tuple[str, list[str]]] = (),
                      heading: str = "", trailing: str = "", name_style: str = "",
-                     rendered: list[tuple[list[str], bool]] | None = None) -> str:
+                     rendered: list[tuple[list[str], bool]] | None = None,
+                     extra: tuple = (), empty: str = "") -> str:
     """Only complete visible entries accept a digit; selection opens a preview.
 
     An entry's first paragraph is its name and carries its `[K]` marker in amber
@@ -8127,6 +9092,9 @@ def pick_record_page(p: Palette, title: str, records: list[tuple[list[str], bool
     page and charged to that page's budget. `rendered` replaces the prose path
     with rows a screen's own components built (owner color, gauges, badges),
     already wrapped to the entry width, keeping exactly this selection contract.
+    `extra` is a screen's own action keys, offered on every page ahead of the
+    page turns and returned like a choice; `empty` is what a picker with no
+    entries says instead of the stock line.
     """
     width = max(1, width - 1)
     inner = _panel_width(p, width)
@@ -8144,9 +9112,11 @@ def pick_record_page(p: Palette, title: str, records: list[tuple[list[str], bool
         entries.append(([(line, key if selectable and i == len(wrapped) - 1 else "")
                          for i, line in enumerate(wrapped)], marker))
     if not entries:
-        entries = [([(sty(p.grey, "Nothing to choose here yet."), "")], "")]
+        entries = [([(row, "") for row in prose_rows(p, empty or "Nothing to choose here yet.",
+                                                     inner, style=p.grey)], "")]
     lines = [row for rows, _ in entries for row in rows]
-    bar = key_bar(p, PICK_BAR, width, 1)
+    extra_keys = "".join(entry[0] for entry in extra)
+    bar = key_bar(p, tuple(extra) + PICK_BAR, width, 1)
     capacity = max(1, height - len(bar) - 1 - frame_cost(p, width))
     before = [(card_heading, rows) for card_heading, rows in before if rows]
     spent = sum(1 + len(rows) for _, rows in before) + (1 if heading else 0)
@@ -8163,8 +9133,8 @@ def pick_record_page(p: Palette, title: str, records: list[tuple[list[str], bool
         heading, spent = "", 0
     entry_capacity = max(1, capacity - (1 if heading else 0))
     pages = _paginate_entries(p, entries, max(1, capacity - spent), entry_capacity)
-    bar = key_bar(p, page_turns(PICK_BAR, len(pages), more_before=more_before,
-                                more_after=more_after), width, 1)
+    bar = key_bar(p, tuple(extra) + page_turns(PICK_BAR, len(pages), more_before=more_before,
+                                               more_after=more_after), width, 1)
     index = len(pages) - 1 if start_last else 0
     while True:
         keys = "".join(key for _, key in pages[index])
@@ -8178,8 +9148,8 @@ def pick_record_page(p: Palette, title: str, records: list[tuple[list[str], bool
         for row in bar[:-1]:
             out_line(row)
         out_prompt(bar[-1])
-        key = read_menu_choice("NPBQ" + keys)
-        if key in keys or key in "BQ":
+        key = read_menu_choice("NPBQ" + keys + extra_keys)
+        if key in keys or key in "BQ" or key in extra_keys:
             return key
         if key == "N":
             if index == len(pages) - 1 and more_after:
@@ -8243,15 +9213,143 @@ def choose_rival(p: Palette, conn: sqlite3.Connection, player: Player, width: in
         offset = page.offset + (-PLAYER_PAGE_SIZE if backwards else PLAYER_PAGE_SIZE)
 
 
+# A modem's front panel, left to right as they sat on the case.
+MODEM_LEDS = ("HS", "AA", "CD", "OH", "RD", "SD", "TR", "MR")
+
+
+def modem_leds(p: Palette, lit: set[str]) -> str:
+    """The modem's status lamps: lit ones in phosphor, the rest dark.
+
+    The war dialer's own instrument. MR and TR are always on (the modem is
+    powered, the terminal is there); the rest say what the rig and the black
+    book are doing, so the strip is a reading and not a decoration.
+    """
+    return " ".join(sty(p.grey, name) + sty(p.phosphor + BOLD if name in lit else p.phosphor_dim,
+                                            gl("crew_on") if name in lit else gl("crew_off"))
+                    for name in MODEM_LEDS)
+
+
+def lead_tier_style(p: Palette, tier: int) -> str:
+    """A carrier tier's color: phosphor for soft through cyan for ice."""
+    return (p.phosphor, p.amber, p.alarm, p.cyan)[max(0, min(tier, 3))]
+
+
+def lead_entry_rows(p: Palette, lead: Lead, player: Player, now: datetime, width: int,
+                    *, odds: bool = True) -> list[str]:
+    """One carrier as a black-book entry: its number, what answered, and the stakes."""
+    name, difficulty, (lo, hi), heat, rank, _ = lead_terms(lead)
+    tier = lead_tier(lead)
+    chips = [sty(p.amber + BOLD, lead.number),
+             sty(p.mint + BOLD, _fit(name, max(12, width - 14))),
+             badge(p, LEAD_TIERS[tier][0].upper(), style=lead_tier_style(p, tier))]
+    if lead.perk:
+        chips.append(badge(p, LEAD_PERKS[lead.perk][0], style=p.amber))
+    rows = compose(chips, width)
+    chance = success_chance(player.crew, difficulty)
+    gauge = max(5, min(8, width // 8))
+    stakes = [sty(p.grey, "odds") + " "
+              + meter(p, chance, 1.0, gauge, style=p.phosphor if chance >= 0.5 else p.amber)
+              + " " + sty(p.cyan, f"{chance:.0%}")] if odds else []
+    # Coarse on purpose, and short: with the full countdown an entry ran to a
+    # third row, and six of them no longer fit one page of an 80x24 terminal.
+    left = max(timedelta(0), from_iso(lead.expires_at) - now)
+    minutes = -(-left // timedelta(minutes=1))
+    cold = f"{-(-minutes // 60)}h" if minutes >= 60 else f"{minutes}m"
+    stakes += [label_value(p, "pays", f"${lo:,}-${hi:,}", style=p.amber),
+               sty(p.grey, "heat") + " " + sty(p.alarm, f"+{heat}"),
+               label_value(p, "rank", f"+{rank}", style=p.mint),
+               label_value(p, "cold", cold, style=p.cyan if minutes > 12 * 60 else p.amber)]
+    return rows + compose(stakes, width)
+
+
+def do_dial(p: Palette, conn: sqlite3.Connection, player: Player, rng: random.Random,
+            width: int, height: int) -> None:
+    """The war dialer: sweep for carriers, then hack what the black book holds.
+
+    One screen for both halves of the loop, so a sweep's finds are one key from
+    being worked. It stays open until Back: a sweep returns here with the new
+    numbers on the page.
+    """
+    while True:
+        now = now_utc()
+        update_display_player(p, player, refresh_player(conn, player.user_id, now), width, height)
+        leads = read_leads(conn, player.user_id, now)
+        inner = _panel_width(p, max(1, width - 1))
+        # High Speed from the 9600 up, Carrier Detect while a number waits,
+        # Auto Answer while there is a turn to sweep with.
+        lit = {"MR", "TR"} | ({"HS"} if player.rig >= 3 else set()) | ({"CD"} if leads else set()) \
+            | ({"AA"} if player.turns_used < TURNS_PER_DAY else set())
+        summary = compose([label_value(p, "RIG", rig_name(player), style=p.cyan),
+                           label_value(p, "BOOK", f"{len(leads)}/{BOOK_LIMIT}", style=p.ink),
+                           label_value(p, "crew", f"{player.crew:,}", style=p.ink),
+                           label_value(p, "turns", f"{TURNS_PER_DAY - player.turns_used}/{TURNS_PER_DAY}",
+                                       style=p.ink),
+                           "" if p.fast else modem_leds(p, lit)], inner)
+        rendered = [(lead_entry_rows(p, lead, player, now, inner - 4), True) for lead in leads]
+        key = pick_record_page(
+            p, "WAR DIALER", [], width, height, rendered=rendered, before=[("", summary)],
+            heading="BLACK BOOK", extra=(("S", "Sweep", "Sweep"),),
+            empty="No numbers yet. [S] Sweep dials a prefix and writes down every carrier that "
+                  "answers; each one is a system you can hack once.")
+        if key in "BQ":
+            return
+        try:
+            if key == "S":
+                if not confirm_action(p, conn, player, "sweep", width, height):
+                    continue
+                delta = ActionDelta()
+                found, busted = resolve_dial(conn, player, now_utc(), rng, require_preview=True,
+                                             delta=delta)
+                headline = f"{counted(len(found), 'carrier')} answered. In your black book now."
+                finds = [(lead.number, LEAD_SYSTEMS[lead.system][0], lead_tier(lead)) for lead in found]
+                prefix = found[0].number.rsplit("-", 1)[0] if found else "555"
+                scene = lambda: dial_scene_frames(
+                    p, width, height, margin=_MARGIN,
+                    seed=_scene_seed(player.handle, player.season_number, player.turns_used, "dial"),
+                    prefix=prefix, rig=rig_name(player), finds=finds, caption=headline,
+                    sub="[D] Dial opens the book.")
+                at = now_utc()
+                rows = [row for lead in found
+                        for row in lead_entry_rows(p, lead, player, at, inner, odds=False)]
+                show_action_result(p, [headline], delta, busted, width, height, player=player,
+                                   scene=scene, success=True, cards=[("CARRIERS", rows)])
+                continue
+            lead = leads[PICK_KEYS.index(key)]
+            if not confirm_action(p, conn, player, "carrier", width, height, lead):
+                continue
+            delta = ActionDelta()
+            success, payout, busted = resolve_lead(conn, player, lead, now_utc(), rng,
+                                                   require_preview=True, delta=delta)
+        except ActionRejected as exc:
+            show_text_pages(p, "ACTION UNAVAILABLE", [str(exc)], width, height, onboarding=True)
+            continue
+        name, tier = LEAD_SYSTEMS[lead.system][0], lead_tier(lead)
+        lines = [f"Carrier: {name}, {lead.number}",
+                 f"You're in. Gross payout ${payout:,}." if success
+                 else f"Access denied; the number is burned. Recovery payout ${payout}."]
+        if success and lead.perk:
+            lines.append(LEAD_PERKS[lead.perk][1])
+        scene = lambda: hack_scene_frames(
+            p, width, height, margin=_MARGIN,
+            seed=_scene_seed(player.handle, player.season_number, player.turns_used, "carrier"),
+            handle=player.handle, contract=tier, approach=min(2, tier), success=success,
+            payout=payout, crew_lost=max(0, -delta.crew), caption=lines[1], sub=lines[0],
+            banner=_fit(name.upper(), 40), prompt=LEAD_SYSTEMS[lead.system][2])
+        show_action_result(p, lines, delta, busted, width, height, player=player, scene=scene,
+                           success=success)
+
+
 def do_trade_warez(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
                    rng: random.Random, w: int = 78, height: int = 24) -> bool:
-    if not confirm_action(p, conn, player, "trade", w, height):
-        return False
-    delta = ActionDelta()
-    gain, busted = resolve_trade_warez(conn, player, now_utc(), rng, require_preview=True, delta=delta)
-    show_action_result(p, [f"You move some warez on the boards. Gross payout ${gain}."], delta, busted, w, height,
-                       player=player)
-    return True
+    # Again returns to the preview, never past it: the Heat and the payout range
+    # it shows have both moved since the last one.
+    while confirm_action(p, conn, player, "trade", w, height):
+        delta = ActionDelta()
+        gain, busted = resolve_trade_warez(conn, player, now_utc(), rng, require_preview=True, delta=delta)
+        if not show_action_result(p, [f"You move some warez on the boards. Gross payout ${gain}."],
+                                  delta, busted, w, height, player=player, again=True):
+            return True
+    return False
 
 
 def operation_preview_lines(player: Player, step: str, choice: JobChoice) -> list[str]:
@@ -8417,7 +9515,20 @@ def crew_records(p: Palette, player: Player, width: int) -> list[tuple[list[str]
                         badge(p, "HELD", style=p.phosphor)
                         if item in (player.specialty, player.support) else ""], width)
         records.append((rows + prose_rows(p, effect, width, style=p.grey), True))
+    # The rig closes the board: the tier above the one on the desk, or the top
+    # one with nothing left to buy.
+    _, name, price, effect = crew_item(CrewChoice("rig"), player)
+    top = player.rig >= len(RIGS) - 1
+    rows = compose([sty(p.mint + BOLD, name), badge(p, "RIG", style=p.cyan),
+                    "" if top else label_value(p, "cost", f"${price:,}", style=p.amber),
+                    badge(p, "TOP RIG", style=p.phosphor) if top else ""], width)
+    records.append((rows + prose_rows(p, "Nothing faster is sold this season." if top else effect,
+                                      width, style=p.grey), True))
     return records
+
+
+# The kit board's entries, in the order their digits pick them.
+KIT_ENTRIES = tuple(item[0] for item in CREW_ITEMS) + ("rig",)
 
 
 def do_crew(p: Palette, conn: sqlite3.Connection, player: Player, width: int, height: int) -> bool:
@@ -8427,33 +9538,39 @@ def do_crew(p: Palette, conn: sqlite3.Connection, player: Player, width: int, he
                                  style=p.phosphor if player.specialty else p.grey),
                      label_value(p, "SUPPORT", player.support or "empty",
                                  style=p.phosphor if player.support else p.grey),
+                     label_value(p, "RIG", rig_name(player), style=p.cyan),
                      label_value(p, "cash", f"${player.cash:,}", style=p.amber)], inner)
     key = pick_record_page(p, "CREW DEVELOPMENT", [], width, height,
                            rendered=crew_records(p, player, inner - 4),
                            before=[("", slots)], heading="KIT")
     if key in "BQ":
         return False
-    choice = CrewChoice(CREW_ITEMS[PICK_KEYS.index(key)][0])
+    choice = CrewChoice(KIT_ENTRIES[PICK_KEYS.index(key)])
     while confirm_action(p, conn, player, "crew", width, height, choice):
         delta = ActionDelta()
+        # Named before the purchase: a rig's entry is the tier above the one
+        # held, so afterwards it would name the next one.
+        bought = crew_item(choice, player)[1]
         try:
             resolve_crew_purchase(conn, player, now_utc(), choice, require_preview=True, delta=delta)
         except ActionRejected as exc:
             show_text_pages(p, "PURCHASE UNAVAILABLE", [str(exc), "Your selection is retained; review the refreshed preview."], width, height, onboarding=True)
             continue
-        show_action_result(p, [crew_item(choice)[1] + " ready."], delta, False, width, height)
+        show_action_result(p, [bought + (" installed." if choice.item == "rig" else " ready.")],
+                           delta, False, width, height, player=player)
         return True
     return False
 
 
 def do_recruit(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
                w: int = 78, height: int = 24) -> bool:
-    if not confirm_action(p, conn, player, "recruit", w, height):
-        return False
-    delta = ActionDelta()
-    resolve_recruit(conn, player, now_utc(), require_preview=True, delta=delta)
-    show_action_result(p, ["A new member joins your crew."], delta, False, w, height, player=player)
-    return True
+    while confirm_action(p, conn, player, "recruit", w, height):
+        delta = ActionDelta()
+        resolve_recruit(conn, player, now_utc(), require_preview=True, delta=delta)
+        if not show_action_result(p, ["A new member joins your crew."], delta, False, w, height,
+                                  player=player, again=True):
+            return True
+    return False
 
 
 def do_job(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
@@ -8495,19 +9612,22 @@ def do_job(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
     if selected in "BQ":
         return False
     choice = JobChoice(contract, PICK_KEYS.index(selected))
-    if not confirm_action(p, conn, player, "job", w, height, choice):
-        return False
-    delta = ActionDelta()
-    name, success, payout, busted = resolve_job(conn, player, now_utc(), rng, choice=choice, require_preview=True, delta=delta)
-    lines = [f"Job: {name} ({JOB_APPROACHES[choice.approach][0]})",
-             f"Success! Gross payout ${payout}." if success else f"Job failed. Recovery payout ${payout}."]
-    scene = lambda: hack_scene_frames(
-        p, w, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "job"),
-        margin=_MARGIN,
-        handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
-        payout=payout, crew_lost=max(0, -delta.crew), caption=lines[1], sub=lines[0])
-    show_action_result(p, lines, delta, busted, w, height, player=player, scene=scene, success=success)
-    return True
+    # Again runs the same contract the same way, from its preview: a standing
+    # contract is repeatable, and picking it twice more cost four keys a turn.
+    while confirm_action(p, conn, player, "job", w, height, choice):
+        delta = ActionDelta()
+        name, success, payout, busted = resolve_job(conn, player, now_utc(), rng, choice=choice, require_preview=True, delta=delta)
+        lines = [f"Job: {name} ({JOB_APPROACHES[choice.approach][0]})",
+                 f"Success! Gross payout ${payout}." if success else f"Job failed. Recovery payout ${payout}."]
+        scene = lambda: hack_scene_frames(
+            p, w, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "job"),
+            margin=_MARGIN,
+            handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
+            payout=payout, crew_lost=max(0, -delta.crew), caption=lines[1], sub=lines[0])
+        if not show_action_result(p, lines, delta, busted, w, height, player=player, scene=scene,
+                                  success=success, again=True):
+            return True
+    return False
 
 
 def do_raid(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime, rng: random.Random, w: int, height: int = 24) -> bool:
@@ -8697,7 +9817,10 @@ def draw_season_change(p: Palette, season_number: int, width: int = 78, height: 
             "retained reports and medals."], inner))])
 
 
-def draw_goodbye(p: Palette, player: Player, w: int) -> None:
+def draw_goodbye(p: Palette, player: Player, w: int, *,
+                 session: tuple[int, int] | None = None) -> None:
+    """The sign-off. `session` is the Rank and cash the caller dialled in with,
+    so the last thing they read is what tonight was worth and when to come back."""
     rank = rank_score(player)
     if p.fast:
         out_line(f"Carrier lost. Rank {rank} - {tier_name(rank)}")
@@ -8712,6 +9835,19 @@ def draw_goodbye(p: Palette, player: Player, w: int) -> None:
     rows = sign_off + [center(sty(p.amber + BOLD, "Carrier lost."), inner),
             center(label_value(p, "final rank", f"{rank:,}", style=p.mint) + "  "
                    + badge(p, _fit(tier_name(rank).upper(), 14)), inner)]
+    if session is not None:
+        gained, earned = rank - session[0], player.cash - session[1]
+        left = TURNS_PER_DAY - player.turns_used
+        tonight = [label_value(p, "tonight", f"Rank {gained:+,}",
+                               style=p.phosphor if gained > 0 else p.grey),
+                   sty(p.phosphor if earned > 0 else p.alarm if earned < 0 else p.grey,
+                       f"{'+' if earned >= 0 else '-'}${abs(earned):,}"),
+                   label_value(p, "turns left", str(left), style=p.ink if left else p.grey)]
+        rows += [center(row, inner) for row in compose(tonight, inner)]
+        if player.turns_used and player.turn_day_start:
+            rows.append(center(label_value(
+                p, "fresh turns in",
+                countdown(from_iso(player.turn_day_start) + DAY - now_utc()), style=p.cyan), inner))
     draw_frame(p, w, [("", rows)])
 
 
@@ -8806,6 +9942,10 @@ def garrison_entry_rows(p: Palette, exchange: Exchange, player: Player,
                      label_value(p, "defence", str(defence), style=p.ink),
                      label_value(p, "security", f"+{max(0, defence - exchange.garrison)}",
                                  style=p.cyan)], width)
+    threat = home_threat(exchange)
+    if threat and threat[2]:
+        rows += prose_rows(p, f"{threat[2]} defence short of {threat[0]}'s crew of {threat[1]}: "
+                           "they will test it.", width, style=p.alarm)
     return rows + prose_rows(p, "Service: " + service, width, style=p.grey)
 
 
@@ -8821,7 +9961,7 @@ def rolls_for_bust(action: str, target=None) -> bool:
     """
     if action == "service":
         return isinstance(target, Exchange) and target.role == "hub"
-    return action in ("trade", "job", "raid", "root")
+    return action in ("trade", "job", "raid", "root", "sweep", "carrier")
 
 
 def inspect_world(world: Path) -> dict:
@@ -9081,6 +10221,7 @@ def _main(argv=None) -> int:
         is_new_player = conn.execute("SELECT 1 FROM players WHERE user_id=?", (user_id,)).fetchone() is None
         player = load_or_create_player(conn, user_id, handle, now, season_number)
         _GAME_EVENTS.arm(conn, player)
+        dialled_in = (rank_score(player), player.cash, player.season_number)
 
         apply_display(palette, read_display(conn, user_id))
         play_splash(palette, info, player.season_number, _OUTPUT_WIDTH, height)
@@ -9106,7 +10247,7 @@ def _main(argv=None) -> int:
             page_index, page_count = draw_dashboard(palette, state, screen_now, w, height, page_index)
             # Always recognize action keys: a displayed zero-turn snapshot
             # may sit idle past its refill. The transaction decides allowance.
-            valid = "BEVHQ?TCJRXGSONPI"
+            valid = "BEVHQ?TCJRXGSONPID"
             choice = read_menu_choice(valid, follow_resize=True)
             if choice == RESIZED:
                 continue  # the top of the loop takes the new size and redraws
@@ -9130,6 +10271,8 @@ def _main(argv=None) -> int:
                     show_player_directory(palette, conn, user_id, w, height)
                 elif choice == "H":
                     show_event_history(palette, conn, player.user_id, w, height)
+                elif choice == "D":
+                    do_dial(palette, conn, player, rng, w, height)
                 elif choice == "T":
                     do_trade_warez(palette, conn, player, action_now, rng, w, height)
                 elif choice == "C":
@@ -9148,7 +10291,11 @@ def _main(argv=None) -> int:
                     do_garrison(palette, conn, player, w, height, rng=rng)
             except ActionRejected as exc:
                 show_text_pages(palette, "ACTION UNAVAILABLE", [str(exc)], w, height, onboarding=True)
-        draw_goodbye(palette, read_player(conn, user_id), w)
+        leaving = read_player(conn, user_id)
+        # A season that turned over mid-session reset both figures; a delta
+        # across it would be the crackdown's, not the caller's.
+        draw_goodbye(palette, leaving, w,
+                     session=dialled_in[:2] if leaving.season_number == dialled_in[2] else None)
     except (EOFError, BrokenPipeError):
         # Actions are already committed. A disconnect never writes a snapshot.
         pass

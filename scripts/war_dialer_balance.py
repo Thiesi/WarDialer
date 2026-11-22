@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import random
 import sqlite3
 import sys
@@ -19,6 +20,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+# The plain rules are what these probes measure: a line condition changes a
+# payout or a Heat gain with the date. Set DOOR_LINES=1 to measure with them.
+os.environ.setdefault("DOOR_LINES", "0")
 import war_dialer as wd
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -37,6 +41,7 @@ SCENARIOS = {
     "capture_trading": "Two callers alternate contests for exchange 1; owning caller recruits/trades.",
     "repeated_victim": "Two mature callers alternate raids on one mature victim who never logs in again.",
     "bust_recovery": "Depleted-crew fixture takes an actual forced bust, then recruits when affordable or trades.",
+    "dialer": "One caller buys the next rig when it leaves $150, hacks the best carrier at >=55% odds, sweeps while the book holds under three, recruits when able, else runs the best Cautious contract at >=60%.",
 }
 
 
@@ -68,6 +73,7 @@ def observe(conn, joined, totals, at):
                 "control_rank": player.control_rank,
                 "operation_stage": player.operation_stage, "successful_operations": player.successful_operations,
                 "specialty": player.specialty, "support": player.support,
+                "rig": player.rig, "bonus_rank": player.bonus_rank,
             }
         return frame
     finally:
@@ -144,21 +150,36 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                     elif name == "capture_trading":
                         if exchanges[0].controller_user_id != uid and player.crew >= 2 and player.cash >= wd.capture_cost(exchanges[0]):
                             action, target = "root", exchanges[0].id
-                        elif player.cash >= wd.RECRUIT_COST:
+                        elif player.cash >= wd.recruit_cost(player):
                             action = "recruit"
                     elif name == "mixed_visit":
                         if not player.specialty and player.cash >= 150:
                             action = "train"
-                        elif turn % 4 == 0 and player.cash >= wd.RECRUIT_COST:
+                        elif turn % 4 == 0 and player.cash >= wd.recruit_cost(player):
                             action = "recruit"
                         elif player.operation_stage != 1 or player.cash >= 50:
                             action = ("case", "prepare", "execute")[player.operation_stage]
+                    elif name == "dialer":
+                        leads = wd.read_leads(conn, uid, now)
+                        ready = [lead for lead in leads
+                                 if wd.success_chance(player.crew, lead.difficulty) >= .55]
+                        if (player.rig < len(wd.RIGS) - 1
+                                and player.cash >= wd.RIGS[player.rig + 1][1] + 150):
+                            action = "rig"
+                        elif ready:
+                            action, target = "carrier", max(ready, key=lambda lead: wd.lead_terms(lead)[4])
+                        elif len(leads) < 3:
+                            action = "sweep"
+                        elif player.cash >= wd.recruit_cost(player):
+                            action = "recruit"
+                        else:
+                            action = "job"
                     elif name in {"jobs_only", "jobs_ladder"}:
                         action = "job"
-                        if name == "jobs_ladder" and turn % 2 == 0 and player.cash >= wd.RECRUIT_COST:
+                        if name == "jobs_ladder" and turn % 2 == 0 and player.cash >= wd.recruit_cost(player):
                             action = "recruit"
                     elif name == "bust_recovery":
-                        action = "recruit" if player.cash >= wd.RECRUIT_COST else "trade"
+                        action = "recruit" if player.cash >= wd.recruit_cost(player) else "trade"
                     elif name.startswith("income_"):
                         if exchanges[0].controller_user_id is None:
                             action, target = "root", exchanges[0].id
@@ -169,13 +190,23 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                                                                   -e.income_per_hour, e.id))
                             if player.cash >= wd.capture_cost(chosen):
                                 action, target = "root", chosen.id
-                        elif player.cash >= wd.RECRUIT_COST:
+                        elif player.cash >= wd.recruit_cost(player):
                             action = "recruit"
                     delta = wd.ActionDelta()
                     try:
                         if action == "train":
                             wd.resolve_crew_purchase(conn, player, now, wd.CrewChoice("phreakers"), delta=delta)
                             busted = False
+                        elif action == "rig":
+                            wd.resolve_crew_purchase(conn, player, now, wd.CrewChoice("rig"), delta=delta)
+                            busted = False
+                        elif action == "sweep":
+                            found, busted = wd.resolve_dial(conn, player, now, rngs[uid], delta=delta)
+                            totals[uid]["carriers_found"] += len(found)
+                        elif action == "carrier":
+                            success, _, busted = wd.resolve_lead(conn, player, target, now, rngs[uid], delta=delta)
+                            totals[uid]["carrier_successes"] += int(success)
+                            totals[uid][f"carrier_tier_{wd.lead_tier(target)}"] += 1
                         elif action in {"case", "prepare", "execute"}:
                             candidates = [i for i, (_, difficulty, _) in enumerate(wd.JOBS)
                                           if min(.9, wd.success_chance(player.crew, difficulty) + .15) >= .6]
@@ -191,7 +222,7 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                             totals[uid].update(raid_successes=int(success), stolen_cash=amount if success else 0)
                         elif action == "job":
                             choice = wd.JobChoice()
-                            if name == "jobs_ladder":
+                            if name in {"jobs_ladder", "dialer"}:
                                 candidates = [i for i, (_, difficulty, _) in enumerate(wd.JOBS)
                                               if wd.success_chance(player.crew, difficulty) >= .6]
                                 choice = wd.JobChoice(max(candidates, default=0), 0)

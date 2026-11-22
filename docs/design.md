@@ -37,7 +37,7 @@ unchanged. Parser details follow Voidrunner's classic-host implementation.
 
 ## Mid-game scenes
 
-Following Voidrunner's scenes and Retro Trivia's finales, nine short scenes
+Following Voidrunner's scenes and Retro Trivia's finales, ten short scenes
 reuse the launch splash's stage and its motion rules. They play only after the
 commit they show, and each ends on a caption that the result screen repeats.
 
@@ -45,7 +45,8 @@ commit they show, and each ends on a caption that the result screen repeats.
 |---|---|
 | Patch In | A Root the Exchange is won or held; an unclaimed exchange gets the short version |
 | Raid | A raid scores or bounces |
-| Contract hack | A job; the contract sets the login banner and the payoff |
+| Sweep | A sweep; the dial log scrolls until each carrier found answers |
+| Contract hack | A job or a carrier; the contract or the system sets the banner and the payoff |
 | Operation | The Execute step only; case and prepare get no scene |
 | Busted | A bust, replacing that turn's own scene, so one turn gets one scene |
 | Tier Up | The turn's Rank crosses a tier, after the outcome scene |
@@ -114,6 +115,147 @@ and a sixteen-color reading by hue family. Backgrounds (glass, plates, scene
 panes) need 256 colors or truecolor. Sixteen-color callers keep the classic
 frame, whole-cell meters and pixel art as a silhouette. ASCII decorations get
 text where art would be, monochrome gets no SGR, and Fast mode stays unframed.
+
+## The overhaul: war dialing, a living wire and a record that lasts (world schema 12)
+
+A review of the whole game found the presentation in good order and the play
+underneath it thin in four specific ways. Each was measured before it was
+changed, with `scripts/war_dialer_balance.py` over twenty-one days.
+
+- **The door was named after a sweep nobody could run.** War dialing was the
+  splash and nothing else. Every action was a menu, a preview and a roll.
+- **Nothing varied.** Five fixed contracts, the same every day of every
+  season, and no event of any kind: a caller's second week was their first.
+- **Cash was solved in days and crew was the only stat.** At a flat $75 the
+  probes recruited 160 to 180 times in three weeks, ten Rank a turn with no
+  risk and no decision, and banked up to $17,000 with nothing to spend it on.
+- **A board with one caller was finished in two days.** All ten exchanges
+  held by one defender each, and nothing in the world that could ever take
+  one back. The feed, the log and the "messages waiting" scene never fired.
+
+Everything below answers one of those. The rules the rest of this document
+locks in are unchanged unless a paragraph here says otherwise: one turn and one
+transaction an action, a free preview that is refused once it is stale, nothing
+spent by a rejection, lazy settlement with no background task.
+
+**War dialing.** `[D] Dial` opens one screen for both halves of a loop: the
+black book, and `[S] Sweep`, which fills it. A sweep costs one turn and 2 Heat
+with the ordinary bust roll. One carrier always answers, a second half the
+time, and each rig tier adds a 10% chance of a third. Each carrier is a system
+that can be hacked once, from the same screen: win or lose the number is
+burned, and an unused one goes cold after 72 hours. The book holds six; a
+sweep into a full book drops the oldest, which the preview says first.
+
+| Tier | Difficulty | Payout | Heat | Rank | Crew lost on failure |
+| --- | --- | --- | --- | --- | --- |
+| Soft | 0.4 x living crew, at least 1 | 1.3 x the contract curve | +6 | +20 | 0 |
+| Warm | 0.8 x, at least 3 | 1.5 x | +10 | +30 | 1 |
+| Hard | 1.4 x, at least 8 | 1.8 x | +14 | +45 | 1 |
+| Ice | 2.4 x, at least 16 | 2.3 x | +18 | +70 | 1 |
+
+Difficulty is sized on the finder's *living* crew, posted members included, and
+the odds on the crew available when the hack is made: sized on available crew
+alone, posting everyone to a garrison before a sweep would buy soft numbers at
+any tier's Rank. Recruiting between the find and the hack is the intended
+play. The floor is what stops a number found by a crew of three from being a
+ninety-percent ticket once that crew has grown. The contract curve is
+`45 + 11 x difficulty`, the line the five standing contracts already sit on,
+and the top of the range is 1.55 times the bottom. A carrier counts as a
+contract for Heat: Phreakers, Fixers and a Burner Kit apply.
+
+About a third of carriers carry a perk, shown in the book before anything is
+committed: a recruit (+1 crew), a cold trail (no Heat added and 10 removed, and
+a Burner Kit is not spent on it), calling-card codes (a free Burner Kit, or $40
+with the slot full) or a doubled payout. On the stock rig a sweep's answers are
+40/35/18/7 soft to ice out of a hundred; each rig tier moves six from soft to
+the two hardest. The standing contracts and operations are untouched and are
+the reliable alternative: the `dialer` probe lands within a few percent of
+`jobs_ladder` on Rank, with far more variety in how it gets there.
+
+**The rig.** Cash keeps buying one thing. `[S] Kit` sells the modem above the
+one held: 1200 baud ($250, +20 Rank), 2400 ($600, +40), 9600 ($1,500, +80),
+14.4k ($3,500, +150) and 28.8k ($8,000, +300). A rig costs a turn, lasts the
+season and improves every sweep. It is why a Bold approach is worth its Heat
+again: there is finally something to spend the difference on.
+
+**Recruiting scales.** The first five living members cost $75 each, as before,
+which is what bust recovery is sized on. Each member past five adds $10 to the
+next one's price. A Carrier Switch recruits for $10 under whatever the boards
+charge that crew. Recruits in the probes fell from 160-180 to about 80 over
+three weeks, and late cash now has two uses that compete.
+
+**Line conditions.** Each day of a season has one condition, the same for every
+caller, named on the switchboard's TODAY card with the time until it changes.
+It is chosen from the world's owner ID, the season and the day, so it cannot
+be rerolled and needs no storage. A season's first day is always clear, and no
+two days running are the same. Each is a bonus or a trade and none is only a
+penalty: Trades pay $15 more; contracts and carriers pay 25% more; Heat gains
+are 2 lower; Heat gains are 3 higher while hack payouts are 50% higher; capture
+attempts cost $15 less; recruits cost $20 less; sweeps find one more carrier;
+clean hacks earn 5 more Rank. The day is part of a preview's state, so a
+preview taken under yesterday's wire is refused without spending. `DOOR_LINES=0`
+pins a clear wire for a SysOp who wants the plain rules; the test suite and the
+balance probes set it, because a rule that changes with the date cannot be
+pinned by one.
+
+**Operators push back (supersedes "NPCs never take a human holding").** The
+three neutral operators still raid nobody, hold no cash and earn no Rank. But a
+caller who takes an operator's home now has that crew to answer to. From 48
+hours after the capture, and once a day from then on, the operator tests a
+defence weaker than its own crew of 2, 4 or 6, with the ordinary odds of crew
+against defence. A defence that matches the crew is never tested, so the rule
+a caller has to remember is one number per home, and a Carrier Switch's two
+security points count toward it. A successful test pays the owner what the
+exchange earned, sends the defenders home and restations the operator; either
+outcome leaves an unread receipt in the operator's name. One test per deadline
+however long the world sat unvisited, and the roll is drawn from the exchange
+and the deadline, so it is the same roll whoever's visit settles it. The
+switchboard's next move and the garrison screen both name a home that is short.
+
+**Bonus Rank.** Carriers, rigs and the Scene Meet condition add to one new
+monotonic counter, `bonus_rank`, which joins the Rank sum in Python and in the
+standings SQL alike and resets with the season.
+
+**The rap sheet.** A season takes cash, crew and Rank. The rap sheet is the one
+record that only grows: lifetime counts (sweeps, carriers, contracts,
+operations, captures, raids, recruits, busts, seasons, medals), four high-water
+marks, and sixteen badges, each earned once. It is written inside the
+transaction that did the deed, so a rolled-back action leaves no trace. A badge
+is announced on the result that earned it and leaves a read receipt. Unearned
+badges are listed with what earns them. None of it is power. It survives a
+season and a SysOp's competition reset. `[I] Scene / Your rap sheet`.
+
+**Fewer keys, fewer words.** A result offers `[A] Again` beside its any-key
+continue for Trade, Recruit and a standing contract: it returns to the same
+preview, never past it, so a repeated contract is two keys instead of five and
+the Heat it shows is current. A preview's TERMS no longer repeat the cost the
+head card states or the Heat sum the gauge draws. The switchboard's first page
+is the whole cockpit at 80x24: who you are, TODAY (the wire and one next move),
+the instruments with RIG and BOOK, the ring and the feed. The awards rule and
+the tour of `[I] Scene` moved to Help, where they already were; an operation's
+budget is said only while one is saved. The first-visit guide is the fantasy,
+three keys to press tonight and the two rules that shape every decision.
+
+**Presentation.** A console tall enough to hold the whole switchboard with
+rows to spare wears the pixel wordmark on it. The dialer shows the modem's
+front-panel lamps as a reading, not a decoration: MR and TR always, CD while a
+number waits, AA while there is a turn to sweep with, HS from the 9600 up. A
+carrier's preview opens on the line itself: `ATDT`, `CONNECT` at the rig's
+speed, and the system's own greeting waiting for an answer. The sweep has its
+own scene, a dial log scrolling past busy signals and fax tones until a modem
+answers, and a carrier's hack plays on the contract scene under the system's
+own banner. Sign-off says what tonight was worth and when fresh turns arrive.
+A result's closing line is drawn from a small pool by the turn, so the
+fifteenth turn of a night does not read like the first.
+
+**Schema 12** adds `players.rig` and `players.bonus_rank`, the bounded
+`leads` table and the `career` table, all empty: nobody is handed carriers
+they did not dial, a rig they did not buy or a badge for play nobody counted.
+The upgrade and its version marker commit together. A world at schema 11 can
+still be settled and archived by the SysOp's commands without being upgraded.
+Operators' clocks reuse `exchanges.npc_return_at`, which a caller-held home
+never used before; a home held since before the rule starts its grace at the
+first settle rather than being tested at once.
 
 ## NetBBS game events (issue #16)
 
@@ -607,7 +749,9 @@ Society at Thiesi/NetBBS#5 Public PBX (2 defenders), Night Relay Union at Thiesi
 Warez Hub (6 defenders). Home positions follow original stable map order. NPCs
 use exchange state, never synthetic player accounts: they have no cash, income,
 Rank, human standings entry, raid eligibility or available crew pool. They never
-attack callers and never take a human-owned exchange.
+attack callers and never take a human-owned exchange. (Superseded for their own
+homes by "Operators push back" in the overhaul section: an operator tests a home
+whose defence is weaker than its crew. They still raid nobody.)
 
 Capturing an NPC home uses the ordinary role price, neighbor discount, Heat,
 crew losses and once-per-player/exchange/season Rank award. Defense is public and
@@ -928,7 +1072,7 @@ must be stopped and a verified backup taken before activation. Host ownership an
 maintenance checks precede conversion. Defense alone does not establish balanced play.
 
 **World schema compatibility.** SQLite `user_version=1` identifies the original
-War Dialer schema; the current version is 11. `user_version=2` added shared-crew
+War Dialer schema; the current version is 12. `user_version=2` added shared-crew
 resource semantics without
 changing its column layout. A complete unversioned world is adopted through a
 numbered migration; its additive fields, retained history and version marker

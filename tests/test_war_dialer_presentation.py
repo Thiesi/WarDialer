@@ -896,7 +896,9 @@ def test_idle_zero_turn_menu_accepts_action_after_refill(tmp_path, monkeypatch):
     monkeypatch.setattr(wd, "now_utc", lambda: clock[0])
     monkeypatch.setattr(wd, "read_menu_choice", choose)
     monkeypatch.setattr(wd, "press_any_key", lambda palette: None)
-    monkeypatch.setattr(wd, "show_text_pages", lambda *args, **kwargs: "A")
+    # Act on the preview; the result's own [A] Again is declined.
+    monkeypatch.setattr(wd, "show_text_pages",
+                        lambda *args, **kwargs: "B" if kwargs.get("again") else "A")
     assert wd.main([]) == 0
     conn = wd.connect(path)
     player = wd.read_player(conn, 0)
@@ -1074,7 +1076,8 @@ def test_open_session_can_continue_after_season_refresh(tmp_path, monkeypatch):
                 wd.out_line(row)
         if clock[0] == now:
             clock[0] += wd.SEASON
-        return "A"
+        # Act on a preview; a result's own [A] Again is declined.
+        return "B" if kwargs.get("again") else "A"
     monkeypatch.setattr(wd, 'show_text_pages', accept_preview)
     assert wd.main([]) == 0
     conn = wd.connect(path)
@@ -1289,7 +1292,8 @@ def test_real_process_dashboard_keeps_action_result_until_acknowledged(tmp_path)
         send(b"c")
         wait_for(b"[A] Act [B] Back")
         send(b"a")
-        wait_for(b"Press any key to continue...")
+        # A recruit can be run again from its result.
+        wait_for(b"any other key continues")
         after_result = len(output)
         # Acknowledgement is a real input boundary: no automatic dashboard redraw.
         assert b"SWITCHBOARD" not in output[output.index(b"A new member joins"):]
@@ -1428,7 +1432,8 @@ def test_real_process_preview_cancel_or_disconnect_spends_nothing(tmp_path, key,
             wait_for(PICKER)
             send(b"1")
         wait_for(b"[A] Act [B] Back")
-        assert b"Cost: 1 turn" in _plain(output)
+        # The head card carries the cost; the terms no longer repeat it.
+        assert b"COST 1 turn" in _plain(output)
         if disconnect:
             process.stdin.close()
         else:
@@ -1587,7 +1592,7 @@ def test_new_player_gets_short_first_visit_then_switchboard(tmp_path):
     with _running_door(tmp_path, new_player=True) as (process, path, wait_for, send, output, reach, screen):
         wait_for(b"Press any key to continue...")
         assert b"FIRST VISIT" in output
-        assert b"[E] Map first" in _plain(output)
+        assert b"[D] Dial sweeps a prefix" in _plain(output)
         send(b" ")
         wait_for(DIAL)
         assert b"SWITCHBOARD" in output
@@ -4473,14 +4478,15 @@ def test_no_world_is_migrated_for_a_tone(tmp_path):
     happened -- and it would cost a schema version that older game binaries refuse
     outright.
     """
-    # 11 counts Trades for the taper (issue #649); it touches no receipt.
-    assert wd.WORLD_SCHEMA_VERSION == 11
-    assert not hasattr(wd, "_migrate_world_v12")
+    # 11 counts Trades for the taper (issue #649) and 12 adds war dialing, rigs
+    # and the rap sheet; neither touches a receipt already written.
+    assert wd.WORLD_SCHEMA_VERSION == 12
+    assert not hasattr(wd, "_migrate_world_v13")
     source = _WAR_DIALER_PATH.read_text(encoding="utf-8")
     assert "UPDATE events SET actor_handle=NULL" not in source
     # A world at the shipped version is opened, not upgraded.
     conn, _ = _painted_world(tmp_path, "noupgrade.db")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
     conn.close()
 
 

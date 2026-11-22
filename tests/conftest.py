@@ -23,6 +23,9 @@ def pytest_configure(config):
 def no_door_splash(monkeypatch):
     monkeypatch.setenv("DOOR_SPLASH", "0")
     monkeypatch.setenv("DOOR_SCENES", "0")
+    # A clear wire every day: the plain rules are what most tests pin, and a
+    # line condition would change a payout or a Heat gain with the date.
+    monkeypatch.setenv("DOOR_LINES", "0")
 
 
 def pytest_collection_modifyitems(config, items):
