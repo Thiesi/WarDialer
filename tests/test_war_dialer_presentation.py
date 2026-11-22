@@ -1460,14 +1460,18 @@ def test_preview_uses_known_odds_and_explicit_private_uncertainty(tmp_path):
     rival.cash = 1234567
     rival.crew = 23456
     raid = "\n".join(wd.action_preview_lines("raid", player, rival))
-    assert "unknown (10%-90%)" in raid
+    # A crew is public only as a rough size, which the preview turns into a
+    # range; the figure itself, and all cash, stay private.
+    assert "Their crew reads as an army (51 or more): your odds are 10%-10%." in raid
+    assert "The exact strength is private." in raid
     assert "1234567" not in raid and "23456" not in raid
     exchange = wd.list_exchanges(conn)[0]
     root = "\n".join(wd.action_preview_lines("root", player, exchange))
     assert "Success: 100%" in root
-    player.heat = 80
+    player.heat = 90
     trade = "\n".join(wd.action_preview_lines("trade", player))
-    assert "bust risk 4.0%" in trade
+    # A Trade cools three and rolls on what is left above the line.
+    assert "Heat: 90.0 - 3 = 87.0; bust risk 14.0%" in trade
     recruit = "\n".join(wd.action_preview_lines("recruit", player))
     assert "No Heat or bust roll" in recruit
     conn.close()
@@ -1559,7 +1563,7 @@ def test_next_steps_explain_depleted_resources_without_spending(tmp_path):
     assert "Need $75 more" in text
     assert "Trade needs no cash" in text
     assert "one-member floor" in text
-    assert "2h 24m" in text
+    assert "1h 24m" in text                    # (90 - 3 - 80) / 5 Heat an hour
     assert "Recruitment adds no Heat" in text
     assert wd.read_player(conn, 1).turns_used == 0
     state.player.turns_used = 15
@@ -3821,13 +3825,13 @@ def test_capped_dots_keep_their_proportion():
     assert after > before
 
 
-@pytest.mark.parametrize("heat,expected", [(0, ""), (72, "near bust"), (79, "bust risk"),
+@pytest.mark.parametrize("heat,expected", [(0, ""), (72, "near bust"), (79, "near bust"),
                                            (95, "bust risk")])
-def test_the_heat_chip_warns_about_what_a_trade_would_leave(tmp_path, heat, expected):
-    """At 79 Heat a trade crosses the threshold and rolls.
+def test_the_heat_chip_warns_about_where_heat_stands(tmp_path, heat, expected):
+    """Within ten of the line is near; past it, everything that adds Heat rolls.
 
-    Judging the chip on where Heat stands called that "near bust" while the
-    advice on the same screen told the caller to wait for a risk-free trade.
+    The chip was judged on what a Trade would leave while a Trade added Heat.
+    A Trade cools now, so 79 is near the line and no longer over it.
     """
     conn, now = _painted_world(tmp_path, f"chip-{heat}.db")
     conn.execute("UPDATE players SET heat=?, specialty='', support='' WHERE user_id=1", (heat,))
@@ -4478,15 +4482,15 @@ def test_no_world_is_migrated_for_a_tone(tmp_path):
     happened -- and it would cost a schema version that older game binaries refuse
     outright.
     """
-    # 11 counts Trades for the taper (issue #649) and 12 adds war dialing, rigs
-    # and the rap sheet; neither touches a receipt already written.
-    assert wd.WORLD_SCHEMA_VERSION == 12
-    assert not hasattr(wd, "_migrate_world_v13")
+    # 11 counts Trades for the taper (issue #649), 12 adds war dialing, rigs and
+    # the rap sheet, and 13 the open line; none touches a receipt already written.
+    assert wd.WORLD_SCHEMA_VERSION == 13
+    assert not hasattr(wd, "_migrate_world_v14")
     source = _WAR_DIALER_PATH.read_text(encoding="utf-8")
     assert "UPDATE events SET actor_handle=NULL" not in source
     # A world at the shipped version is opened, not upgraded.
     conn, _ = _painted_world(tmp_path, "noupgrade.db")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
     conn.close()
 
 

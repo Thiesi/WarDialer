@@ -455,7 +455,8 @@ def test_unreadable_sheet_data_reads_as_an_empty_sheet(world):
 
 
 def test_every_badge_reads_a_stat_the_sheet_keeps():
-    counted = {key for key, _ in wd.CAREER_COUNTS} | wd.CAREER_PEAKS | {"ice", "jackpots"}
+    counted = ({key for key, _ in wd.CAREER_COUNTS} | wd.CAREER_PEAKS | set(wd.CAREER_TRIES)
+               | {"ice", "jackpots", "deep_dives"})
     keys = [key for key, *_ in wd.BADGES]
     assert len(set(keys)) == len(keys)
     for key, name, how, stat, need in wd.BADGES:
@@ -465,14 +466,21 @@ def test_every_badge_reads_a_stat_the_sheet_keeps():
 
 # -- schema 12 ---------------------------------------------------------------------
 
-def test_the_carrier_schema_upgrade_is_atomic_idempotent_and_starts_empty(world):
-    conn, now, player = world
-    wd.resolve_trade_warez(conn, player, now, Rolls(0.0))
+def _drop_to_schema_11(conn):
+    """Undo schemas 13 and 12, leaving the world as v1.5.1 wrote it."""
+    for column in ("operation_lead", "line_banked", "line_depth", "line_rank"):
+        conn.execute(f"ALTER TABLE players DROP COLUMN {column}")
     conn.execute("DROP TABLE career")
     conn.execute("DROP TABLE leads")
     conn.execute("ALTER TABLE players DROP COLUMN bonus_rank")
     conn.execute("ALTER TABLE players DROP COLUMN rig")
     conn.execute("PRAGMA user_version=11")
+
+
+def test_the_carrier_schema_upgrade_is_atomic_idempotent_and_starts_empty(world):
+    conn, now, player = world
+    wd.resolve_trade_warez(conn, player, now, Rolls(0.0))
+    _drop_to_schema_11(conn)
     before = list(conn.iterdump())
 
     def deny_version(action, name, value, *args):
@@ -485,7 +493,7 @@ def test_the_carrier_schema_upgrade_is_atomic_idempotent_and_starts_empty(world)
     conn.set_authorizer(None)
     assert list(conn.iterdump()) == before
     wd.ensure_schema(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == wd.WORLD_SCHEMA_VERSION
     upgraded = wd.read_player(conn, 1)
     assert (upgraded.rig, upgraded.bonus_rank, upgraded.cash) == (0, 0, player.cash)
     assert conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
@@ -499,11 +507,7 @@ def test_an_older_world_settles_and_archives_without_the_new_columns(world):
     """The SysOp's commands settle a world they do not upgrade."""
     conn, now, player = world
     conn.execute("UPDATE players SET crew_recruited_total=3 WHERE user_id=1")
-    conn.execute("DROP TABLE career")
-    conn.execute("DROP TABLE leads")
-    conn.execute("ALTER TABLE players DROP COLUMN bonus_rank")
-    conn.execute("ALTER TABLE players DROP COLUMN rig")
-    conn.execute("PRAGMA user_version=11")
+    _drop_to_schema_11(conn)
     wd.settle_world(conn, now + wd.SEASON)
     assert conn.execute("SELECT rank FROM season_results WHERE user_id=1").fetchone()[0] == 30
     assert wd.read_leads(conn, 1, now + wd.SEASON) == []
@@ -618,12 +622,14 @@ def test_the_switchboard_leads_with_today_and_one_next_move(tmp_path, monkeypatc
 def test_the_next_move_names_what_the_caller_is_out_of_first(tmp_path):
     conn, now = _painted_world(tmp_path)
     state = wd.dashboard_state(conn, 1, now)
+    assert "Close to the bust line" in wd.next_move(state, now)      # the painted world sits at 72
+    state.player.heat = 10
     assert "black book is empty" in wd.next_move(state, now)
     state.book = 2
     assert "2 carriers in your black book" in wd.next_move(state, now)
     state.player.crew = 1
     assert "One crew member left" in wd.next_move(state, now)
-    state.player.heat = 79
+    state.player.heat = 84
     assert "The line is hot" in wd.next_move(state, now)
     state.player.turns_used = wd.TURNS_PER_DAY
     assert "Out of turns" in wd.next_move(state, now)
@@ -754,7 +760,7 @@ def test_the_rap_sheet_lists_every_badge_earned_or_not(tmp_path):
     cards = wd.rap_sheet_cards(_palette(), career, player, 75)
     assert [title for title, _ in cards] == ["", "RECORD", "HIGH-WATER MARKS", "BADGES"]
     text = _ANSI_RE.sub("", "\n".join(row for _, rows in cards for row in rows))
-    assert "badges 1/16" in text and "carriers cracked 3" in text
+    assert f"badges 1/{len(wd.BADGES)}" in text and "carriers cracked 3" in text
     assert "best season rank 1,500" in text and "ELITE" in text and "2400 baud" in text
     for _, name, how, _, _ in wd.BADGES:
         assert name in text and how in text

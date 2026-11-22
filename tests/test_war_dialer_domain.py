@@ -61,7 +61,10 @@ def _save_fixture(conn, player):
 
 
 def _drop_carrier_schema(conn):
-    """Undo schema 12 (war dialing, rigs, the rap sheet) for a downgrade fixture."""
+    """Undo schemas 13 (the open line, an operation's carrier) and 12 (war dialing,
+    rigs, the rap sheet) for a downgrade fixture."""
+    for column in ("operation_lead", "line_banked", "line_depth", "line_rank"):
+        conn.execute(f"ALTER TABLE players DROP COLUMN {column}")
     conn.execute("DROP TABLE career")
     conn.execute("DROP TABLE leads")
     conn.execute("ALTER TABLE players DROP COLUMN bonus_rank")
@@ -1124,19 +1127,19 @@ def test_heat_decays_before_idle_sessions_next_action(db_path):
     conn, now, a, _ = _rivals(db_path)
     a.heat = 80
     _save_fixture(conn, a)
-    gain, busted = wd.resolve_trade_warez(conn, a, now + timedelta(hours=2), FixedRandom())
+    # A sweep, the least Heat any action adds: a Trade cools and would hide the decay.
+    _, busted = wd.resolve_dial(conn, a, now + timedelta(hours=2), FixedRandom())
     assert not busted
-    assert a.heat == pytest.approx(72)
-    assert a.cash == 1000 + gain
+    assert a.heat == pytest.approx(80 - 10 + wd.DIAL_HEAT)
     conn.close()
 
 
 def test_new_heat_is_not_decayed_over_time_before_the_action(db_path):
     conn, now, a, _ = _rivals(db_path)
     later = now + timedelta(hours=3)
-    wd.resolve_trade_warez(conn, a, later, FixedRandom())
+    wd.resolve_dial(conn, a, later, FixedRandom())
     reloaded = wd.load_or_create_player(conn, a.user_id, a.handle, later, a.season_number)
-    assert reloaded.heat == pytest.approx(wd.TRADE_WAREZ_HEAT)
+    assert reloaded.heat == pytest.approx(wd.DIAL_HEAT)
     assert reloaded.heat_updated_at == wd.to_iso(later)
     conn.close()
 
@@ -1145,8 +1148,8 @@ def test_clock_rollback_does_not_repeat_decay_or_refill(db_path):
     conn, now, a, _ = _rivals(db_path)
     wd.resolve_recruit(conn, a, now)
     later = now + timedelta(hours=25)
-    wd.resolve_trade_warez(conn, a, later, FixedRandom())
-    wd.resolve_trade_warez(conn, a, now + timedelta(hours=1), FixedRandom())
+    wd.resolve_dial(conn, a, later, FixedRandom())
+    wd.resolve_dial(conn, a, now + timedelta(hours=1), FixedRandom())
     actual = wd.read_player(conn, a.user_id)
     assert actual.turns_used == 2
     assert actual.turn_day_start == wd.to_iso(later)
@@ -1399,7 +1402,9 @@ def _legacy_income_world(db_path):
     old_schema = schema.replace(addition, "")
     values = asdict(a)
     values.pop("income_remainder")
-    for column in wd._ECONOMY_COLUMNS | wd._OPERATION_COLUMNS | {"raid_shield_until", "specialty", "support", "insignia", "turns_trading", "rig", "bonus_rank"}:
+    for column in wd._ECONOMY_COLUMNS | wd._OPERATION_COLUMNS | {"raid_shield_until", "specialty", "support", "insignia", "turns_trading", "rig", "bonus_rank",
+                                                                 "line_rank", "line_depth", "line_banked",
+                                                                 "operation_lead"}:
         values.pop(column)
     conn.execute("DROP TABLE players")
     conn.execute(old_schema)
@@ -2261,7 +2266,7 @@ def test_specialty_and_burner_effects_match_actual_action_and_preview(action, ba
     player = _make_player(crew=5, cash=300)
     player.specialty, player.support = specialty, 'burner'
     target = _make_player(user_id=2) if action == 'raid' else wd.Exchange(1, 'Test', 2, None, None, 0, None, wd.to_iso(wd.now_utc()), 1) if action == 'root' else None
-    # Trade has its own unchanged Heat constant.
+    # Trade has its own Heat constant: it cools, so from zero Heat it adds none.
     if action == 'trade': base_heat = wd.TRADE_WAREZ_HEAT
     reduction = 3 if (action == 'job' and specialty == 'phreakers' or action in {'raid', 'root'} and specialty == 'lookouts') else 0
     expected = max(0, base_heat - reduction - (0 if action == 'trade' else 10))
@@ -2428,7 +2433,7 @@ def test_operation_three_steps_persist_and_award_double_contract_success(db_path
     conn.close()
     conn = wd.connect(db_path)
     actor = wd.read_player(conn, 1)
-    assert wd.operation_state(actor) == (contract, approach, 1)
+    assert wd.operation_state(actor) == (contract, approach, 1, 0)
     wd.resolve_operation(conn, actor, now, 'prepare', NoOperationRolls())
     assert actor.cash == 950 and actor.operation_stage == 2
     conn.close()
@@ -2441,7 +2446,7 @@ def test_operation_three_steps_persist_and_award_double_contract_success(db_path
     assert result[1] and result[2] == terms[2][0] * 2
     assert (actor.cash, actor.turns_used, actor.heat) == (950 + result[2], 3, terms[4])
     assert actor.successful_jobs == 0 and actor.successful_operations == 1 and wd.rank_score(actor) == 30
-    assert wd.operation_state(actor) == (-1, 1, 0)
+    assert wd.operation_state(actor) == (-1, 1, 0, 0)
     assert wd.read_player_page(conn, 1, now, standings=True).position == 1
     conn.close()
 
@@ -2452,7 +2457,7 @@ def test_operation_failure_requires_paid_preparation_and_can_abandon_without_tur
     wd.resolve_operation(conn, actor, now, 'case', NoOperationRolls(), choice=choice)
     wd.resolve_operation(conn, actor, now, 'prepare', NoOperationRolls())
     assert not wd.resolve_operation(conn, actor, now, 'execute', FixedRandom(.99))[1]
-    assert wd.operation_state(actor) == (0, 0, 1) and actor.crew == 3
+    assert wd.operation_state(actor) == (0, 0, 1, 0) and actor.crew == 3
     before = list(conn.iterdump())
     for step in ('case', 'execute'):
         with pytest.raises(wd.ActionRejected): wd.resolve_operation(conn, actor, now, step, FixedRandom(), choice=choice)
@@ -2571,7 +2576,7 @@ def test_operations_upgrade_and_season_reset_preserve_identity_not_competitive_i
     wd.ensure_schema(conn)
     assert list(conn.iterdump()) == before
     reset = wd.refresh_player(conn, 1, now + wd.SEASON)
-    assert wd.operation_state(reset) == (-1, 1, 0) and reset.successful_operations == 0
+    assert wd.operation_state(reset) == (-1, 1, 0, 0) and reset.successful_operations == 0
     assert reset.created_at == actor.created_at
     assert conn.execute('SELECT COUNT(*) FROM recon').fetchone()[0] == 0
     conn.close()

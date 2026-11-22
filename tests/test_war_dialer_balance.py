@@ -101,6 +101,32 @@ def _finish(name, days=12):
     return result['daily'][-1]['players']['1'], result['actions']['1']
 
 
+# The risk profiles are compared on their averages over several seeds and a
+# full three weeks. One seed is one caller's luck: on a single seed a policy
+# that is a fifth better on average can finish behind, and a comparison made
+# after twelve days catches the Heat rider before it has overtaken anybody.
+PROFILE_SEEDS = (1, 2, 3, 4, 5, 6)
+_PROFILES = {}
+
+
+def _profile(name):
+    """A policy's average finish over the profile seeds: Rank, crew, and its action counts."""
+    if name not in _PROFILES:
+        runs = [balance.run_scenario(name, days=21, seed=seed) for seed in PROFILE_SEEDS]
+        finishes = [run['daily'][-1]['players']['1'] for run in runs]
+        counts = Counter()
+        for run in runs:
+            counts.update(run['actions']['1'])
+        _PROFILES[name] = {
+            'rank': sum(player['rank'] for player in finishes) / len(runs),
+            'crew': sum(player['total_crew'] for player in finishes) / len(runs),
+            'ranks': [player['rank'] for player in finishes],
+            'busts': counts['busts'] / len(runs), 'digs': counts['digs'], 'traces': counts['traces'],
+            'dig_rank': counts['dig_rank'],
+        }
+    return _PROFILES[name]
+
+
 def test_managed_risk_beats_both_careful_and_reckless_play():
     """The three risk profiles, measured rather than assumed.
 
@@ -110,12 +136,37 @@ def test_managed_risk_beats_both_careful_and_reckless_play():
     out-ranks both. A rule change that reorders these three has changed what
     the game rewards, and should say so.
     """
-    careful, _ = _finish('dialer')
-    reckless, reckless_actions = _finish('greedy')
-    rider, rider_actions = _finish('rider')
-    assert rider['rank'] > careful['rank'] > reckless['rank']
-    assert reckless_actions['busts'] >= 6 and reckless['total_crew'] <= 5
-    assert rider_actions.get('busts', 0) <= 2 and rider['total_crew'] >= 10
+    careful, reckless, rider = _profile('dialer'), _profile('greedy'), _profile('rider')
+    assert rider['rank'] > careful['rank'] * 1.05 > reckless['rank'] * 1.05
+    assert reckless['busts'] >= 10 and reckless['crew'] <= 5
+    assert rider['busts'] <= 2 and rider['crew'] >= 10
+
+
+def test_digging_is_worth_it_and_is_a_gamble():
+    """The best play includes digs, and a dig is lost often enough to be one.
+
+    A digger takes the first two digs on a line while they fit under the bust
+    line. On average it has to out-rank a caller who spends the same Heat on
+    more hacks, or nobody chasing Rank would dig; it has to lose what it
+    carries on a real share of its digs, or the dig is a bonus and not a
+    decision; and its finishes have to spread wider than the rider's, or it
+    is not a gamble at all.
+    """
+    rider, digger = _profile('rider'), _profile('digger')
+    assert digger['rank'] > rider['rank']
+    assert digger['digs'] >= 100 and digger['dig_rank'] > 0
+    assert 0.15 <= digger['traces'] / digger['digs'] <= 0.45
+    assert digger['busts'] <= 2                               # it never digs past the line
+    assert (max(digger['ranks']) - min(digger['ranks'])) > (max(rider['ranks']) - min(rider['ranks']))
+    # Paid in Rank, a dig floods no economy: the first design paid cash and
+    # ran crews past 130.
+    assert digger['crew'] <= 90
+
+
+def test_digging_every_line_out_costs_busts_and_crew():
+    digger, gambler = _profile('digger'), _profile('gambler')
+    assert gambler['digs'] > digger['digs'] and gambler['busts'] >= 3
+    assert gambler['crew'] < digger['crew']
 
 
 def test_a_three_day_a_week_caller_plays_every_visit_and_keeps_climbing():
