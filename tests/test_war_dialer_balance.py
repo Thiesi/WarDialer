@@ -94,3 +94,32 @@ def test_the_probes_measure_the_plain_rules():
     """A line condition would change a payout with the date the probe ran on."""
     assert balance.os.environ["DOOR_LINES"] == "0"
     assert balance.wd.lines_switched_off()
+
+
+def _finish(name, days=12):
+    result = balance.run_scenario(name, days=days)
+    return result['daily'][-1]['players']['1'], result['actions']['1']
+
+
+def test_managed_risk_beats_both_careful_and_reckless_play():
+    """The three risk profiles, measured rather than assumed.
+
+    Heat is a budget with a cliff at the bust line. A caller who never spends
+    it leaves Rank on the table, one who ignores it is busted most days and
+    ends with a crew of a handful, and one who rides it to the line and stops
+    out-ranks both. A rule change that reorders these three has changed what
+    the game rewards, and should say so.
+    """
+    careful, _ = _finish('dialer')
+    reckless, reckless_actions = _finish('greedy')
+    rider, rider_actions = _finish('rider')
+    assert rider['rank'] > careful['rank'] > reckless['rank']
+    assert reckless_actions['busts'] >= 6 and reckless['total_crew'] <= 5
+    assert rider_actions.get('busts', 0) <= 2 and rider['total_crew'] >= 10
+
+
+def test_a_three_day_a_week_caller_plays_every_visit_and_keeps_climbing():
+    casual, actions = _finish('casual')
+    assert actions['turns'] == 6 * 15                      # days 0, 2, 4, 7, 9 and 11
+    assert casual['rank'] >= 700                           # Hacker inside two weeks
+    assert casual['rig'] >= 1 and actions['sweep'] > 0 and actions['carrier'] > 0

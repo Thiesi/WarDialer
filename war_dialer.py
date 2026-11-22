@@ -1432,6 +1432,11 @@ BADGES: tuple[tuple[str, str, str, str, int], ...] = (
 )
 # Stats that record a high-water mark rather than a running count.
 CAREER_PEAKS = {"best_rank", "most_held", "most_crew", "best_rig"}
+# Attempts, counted beside the successes above so a SysOp can read a success
+# rate and an action mix out of real play (`--admin stats`). They are on the
+# sheet but not on the caller's screen: a caller wants the wins.
+CAREER_TRIES = ("turns", "trades", "contract_tries", "carrier_tries", "operation_tries",
+                "raid_tries", "root_tries")
 # The running counts, in the order the rap sheet prints them, with their labels.
 CAREER_COUNTS = (("sweeps", "sweeps dialed"), ("carriers", "carriers cracked"),
                  ("contracts", "contracts run"), ("operations", "operations pulled"),
@@ -1633,6 +1638,16 @@ def rank_score(player: Player) -> int:
     )
 
 
+def _note(player: Player, deed: str) -> None:
+    """Count a deed for the rap sheet.
+
+    Kept on the object, never on the row: the action's transaction reads the
+    tally once it commits, and a rejected action's object is simply dropped.
+    """
+    deeds = player.__dict__.setdefault("deeds", {})
+    deeds[deed] = deeds.get(deed, 0) + 1
+
+
 def line_condition() -> tuple[str, str, str, dict[str, int]]:
     """Today's wire: key, name, what it does in words, and its effects."""
     return LINE_CONDITIONS[_LINE_INDEX]
@@ -1825,8 +1840,7 @@ def roll_bust(player: Player, rng: random.Random) -> bool:
         return False
     chance = min(HEAT_BUST_CHANCE_CAP, (player.heat - HEAT_BUST_THRESHOLD) * HEAT_BUST_CHANCE_PER_POINT)
     if rng.random() < chance:
-        # Read once by the action transaction, for the rap sheet; never stored.
-        player.__dict__["bust_flag"] = True
+        _note(player, "busts")
         cash_loss = .10 if player.support == "stash" else BUST_CASH_LOSS_FRACTION
         player.cash = int(player.cash * (1 - cash_loss))
         if player.support == "stash":
@@ -1853,6 +1867,7 @@ def trade_payout_range(player: Player) -> tuple[int, int]:
 
 
 def action_trade_warez(player: Player, rng: random.Random) -> tuple[int, bool]:
+    _note(player, "trades")
     gain = rng.randint(*trade_payout_range(player))
     player.turns_trading += 1
     player.cash += gain
@@ -1882,6 +1897,7 @@ def job_terms(choice: JobChoice) -> tuple[str, int, tuple[int, int], str, int, i
 
 def action_job(player: Player, rng: random.Random, choice: JobChoice = JobChoice(), *, operation: bool = False) -> tuple[str, bool, int, bool]:
     name, difficulty, (lo, hi), _, heat, loss = job_terms(choice)
+    _note(player, "operation_tries" if operation else "contract_tries")
     success = rng.random() < min(.9, success_chance(player.crew, difficulty) + (.15 if operation else 0))
     if success:
         payout = rng.randint(lo * (2 if operation else 1), hi * (2 if operation else 1))
@@ -1966,6 +1982,7 @@ def action_dial(player: Player, rng: random.Random, prefixes: list[str]) -> tupl
 def action_lead(player: Player, lead: Lead, rng: random.Random) -> tuple[bool, int, bool]:
     """Hack one carrier out of the black book. Win or lose, the number is spent."""
     _, difficulty, (low, high), heat, rank, loss = lead_terms(lead)
+    _note(player, "carrier_tries")
     success = rng.random() < success_chance(player.crew, difficulty)
     cold = success and lead.perk == "cool"
     if success:
@@ -2001,6 +2018,7 @@ def rig_name(player: Player) -> str:
 
 
 def action_raid(attacker: Player, target: Player, rng: random.Random, *, now: datetime | None = None) -> tuple[bool, int, bool]:
+    _note(attacker, "raid_tries")
     success = rng.random() < success_chance(attacker.crew, target.crew)
     if success:
         amount = int(target.cash * RAID_STEAL_FRACTION)
@@ -2075,6 +2093,7 @@ def action_root_exchange(attacker: Player, exchange: Exchange, now: datetime, rn
     if attacker.cash < cost:
         raise ActionRejected(f"Need ${cost} for this capture attempt. Trade to fund it; nothing spent.")
     attacker.cash -= cost
+    _note(attacker, "root_tries")
     if not exchange_occupied(exchange):
         success = True
     else:
@@ -3323,13 +3342,16 @@ def _action_player(conn: sqlite3.Connection, snapshot: Player, now: datetime, *,
         player.turns_used += 1
         _save_player(conn, player)
         assigned_after = assigned_crew(conn, player.user_id)
-        career_bump(conn, player.user_id, now, player=player, delta=delta,
+        # What the rules noted while they ran (a bust, each attempt), beside
+        # what the monotonic counters say was won. Popped, so the snapshot
+        # copied back below never carries a tally into the next action.
+        career_bump(conn, player.user_id, now, player=player, delta=delta, turns=1,
                     contracts=player.successful_jobs - counted[0],
                     operations=player.successful_operations - counted[1],
                     raids=player.successful_raids - counted[2],
                     captures=player.exchanges_taken_total - counted[3],
                     recruits=player.crew_recruited_total - counted[4],
-                    busts=int(player.__dict__.pop("bust_flag", False)))
+                    **player.__dict__.pop("deeds", {}))
     snapshot.__dict__.update(player.__dict__)
     if delta is not None:
         delta.cash = player.cash - before[0]
@@ -9992,6 +10014,66 @@ def inspect_world(world: Path) -> dict:
         return result
 
 
+def world_stats(world: Path) -> dict:
+    """Public host API: what the callers of one world have actually done.
+
+    Read-only, like `inspect_world`, and aggregate: the sums of every caller's
+    rap sheet and the shape of the current standings, never a caller's own
+    figures. It is what a balance change should be argued from. Rates are over
+    the attempts the sheets have counted, so a sheet that predates attempt
+    counting contributes wins without tries and a rate is capped at one.
+    """
+    world = Path(world).expanduser().resolve()
+    status = inspect_world(world)
+    result = {"world": status["world"], "schema": status["schema"],
+              "stored_season": status["stored_season"], "players": status["players"]}
+    if status["schema"] < 12:
+        return result | {"sheets": 0, "note": "No rap sheets before world schema 12."}
+    with closing(sqlite3.connect(world.as_uri() + "?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        totals: dict[str, int] = {}
+        badges: dict[str, int] = {}
+        sheets = 0
+        for (user_id,) in conn.execute("SELECT user_id FROM career ORDER BY user_id").fetchall():
+            career = read_career(conn, user_id)
+            sheets += 1
+            for key, value in career["stats"].items():
+                if key not in CAREER_PEAKS:
+                    totals[key] = totals.get(key, 0) + value
+            for key in career["badges"]:
+                badges[key] = badges.get(key, 0) + 1
+        season = conn.execute("SELECT value FROM meta WHERE key='active_season'").fetchone()
+        ranks = sorted(row[0] for row in conn.execute(
+            f"SELECT {_rank_sql(conn)} FROM players WHERE season_number=?",
+            (int(season[0]),))) if season is not None else []
+
+    def rate(wins: str, tries: str) -> float | None:
+        return round(min(1.0, totals.get(wins, 0) / totals[tries]), 3) if totals.get(tries) else None
+
+    turns = totals.get("turns", 0)
+    tiers = {name: 0 for _, name in RANK_TIERS}
+    for rank in ranks:
+        tiers[tier_name(rank)] += 1
+    return result | {
+        "sheets": sheets,
+        "totals": dict(sorted(totals.items())),
+        # How a hundred turns were spent, and how often one ended in a bust.
+        "per_100_turns": {key: round(100 * totals.get(key, 0) / turns, 1)
+                          for key in ("trades", "sweeps", "carrier_tries", "contract_tries",
+                                      "operation_tries", "raid_tries", "root_tries", "recruits",
+                                      "busts")} if turns else {},
+        "success": {"carriers": rate("carriers", "carrier_tries"),
+                    "contracts": rate("contracts", "contract_tries"),
+                    "operations": rate("operations", "operation_tries"),
+                    "raids": rate("raids", "raid_tries")},
+        "badge_holders": {key: badges.get(key, 0) for key, *_ in BADGES},
+        "season_rank": {"players": len(ranks), "ranked": sum(1 for rank in ranks if rank > 0),
+                        "median": ranks[len(ranks) // 2] if ranks else 0,
+                        "top": ranks[-1] if ranks else 0, "tiers": tiers},
+    }
+
+
 def _admin_audit(conn, action, *, operator, reason="", before=None, after=None,
                  snapshot=None, node_backup=None):
     row = conn.execute("SELECT value FROM meta WHERE key='sysop_audit'").fetchone()
@@ -10022,12 +10104,14 @@ def administer_world(world: Path, command: str, *, maintenance: bool | None = No
     filename, and first back up SQLite (including WAL) to a fresh snapshot.
     The optional node_backup mapping labels an independently verified host backup.
     """
-    if command not in ("status", "maintenance", "close-season", "reset"):
+    if command not in ("status", "stats", "maintenance", "close-season", "reset"):
         raise ValueError(f"Unknown War Dialer administration command: {command}")
     world = Path(world).expanduser().resolve()
     status = inspect_world(world)  # Never manufacture a world for an admin typo.
     if command == "status":
         return status
+    if command == "stats":
+        return world_stats(world)
     if command == "maintenance" and not isinstance(maintenance, bool):
         raise ValueError("Maintenance must be on or off.")
     destructive = command in ("close-season", "reset")
@@ -10087,7 +10171,8 @@ def administer_world(world: Path, command: str, *, maintenance: bool | None = No
 def admin_main(argv=None) -> int:
     """CLI adapter; no drop file, caller terminal, or NetBBS installation needed."""
     parser = argparse.ArgumentParser(description="Inspect or maintain a War Dialer world.")
-    parser.add_argument("--admin", choices=("status", "maintenance", "close-season", "reset"), required=True)
+    parser.add_argument("--admin", choices=("status", "stats", "maintenance", "close-season", "reset"),
+                        required=True)
     parser.add_argument("state", nargs="?", choices=("on", "off"))
     parser.add_argument("--world", type=Path, help="existing world; defaults to WAR_DIALER_DB_PATH")
     parser.add_argument("--json", action="store_true", help="machine-readable status or error")
@@ -10113,7 +10198,8 @@ def admin_main(argv=None) -> int:
         print(json.dumps(result))
     else:
         for key, value in result.items():
-            rendered = json.dumps(value, ensure_ascii=True) if isinstance(value, list) else str(value)
+            rendered = (json.dumps(value, ensure_ascii=True) if isinstance(value, (list, dict))
+                        else str(value))
             print(textwrap.fill(f"{key}: {_event_plain(rendered)}", width=80))
     return 0
 

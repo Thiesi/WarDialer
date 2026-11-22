@@ -257,6 +257,37 @@ Operators' clocks reuse `exchanges.npc_return_at`, which a caller-held home
 never used before; a home held since before the rule starts its grace at the
 first settle rather than being tested at once.
 
+## Measuring play
+
+Rules are changed against measurements, and two kinds exist.
+
+**Probes.** `scripts/war_dialer_balance.py` plays scripted policies through the
+real actions. Three of them are the game's risk profiles, and the order they
+finish in is a property the suite holds:
+
+| Policy | What it does | Twenty-one days, four seeds |
+| --- | --- | --- |
+| `dialer` | Careful: carriers at 55% odds or better, Cautious contracts | Rank 3,100-3,415, no busts, crew 71-80 |
+| `greedy` | Reckless: best-paying carrier at 30% or better, Bold contracts, ignores Heat | Rank 2,455-2,805, 19-24 busts, crew 1-3 |
+| `rider` | The greedy choices while the action's Heat keeps it at or under the bust line | Rank 3,875-4,110, 0-3 busts, crew 35-51 |
+
+So Heat does bite, hard, but only past a cliff: it is a second budget beside
+turns. A caller who never spends it leaves a fifth of their Rank on the table,
+one who ignores it is busted most days and ends with a handful of crew, and
+the best play is to spend it to the line and stop. That best play is a
+calculation, though, not a gamble: nothing in it is decided under uncertainty.
+`casual` plays the careful policy three days a week and reaches Hacker inside
+two weeks.
+
+**Real play.** `--admin stats` sums every caller's rap sheet, read-only and
+without naming anyone: how a hundred turns were spent, how often one ended in
+a bust, success rates, badge holders and the shape of the standings. For that
+the sheet counts attempts beside wins (turns, trades, and tries at contracts,
+carriers, operations, raids and roots). They are on the sheet and not on the
+caller's screen. The rules note each attempt and each bust on the acting
+player object as they run, and the action's transaction reads the tally once
+it commits, so a rejected action counts nothing.
+
 ## NetBBS game events (issue #16)
 
 NetBBS door API 5 lets a door report what a caller earned. War Dialer reports

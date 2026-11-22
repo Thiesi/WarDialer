@@ -37,11 +37,17 @@ Administration needs no caller drop file:
 
 ```sh
 python war_dialer.py --world /var/lib/wardialer/world.db --admin status --json
+python war_dialer.py --world /var/lib/wardialer/world.db --admin stats --json
 python war_dialer.py --world /var/lib/wardialer/world.db --admin maintenance on
 python war_dialer.py --world /var/lib/wardialer/world.db --admin close-season \
   --confirm world.db --reason "Start the next competition"
 python war_dialer.py --world /var/lib/wardialer/world.db --admin maintenance off
 ```
+
+`stats` is read-only like `status`. It sums every caller's rap sheet (how a
+hundred turns were spent, how often one ended in a bust, success rates, badge
+holders) and the shape of the current standings. It names no caller, and it is
+what a balance change should be argued from.
 
 `reset` also clears receipts while retaining player identities, account age,
 world ownership and the latest 100 audit entries. Both destructive commands
