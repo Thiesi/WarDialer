@@ -1500,6 +1500,11 @@ BADGES: tuple[tuple[str, str, str, str, int], ...] = (
     ("podium", "PODIUM", "Win a season medal.", "medals", 1),
     ("veteran", "VETERAN", "Finish three seasons with Rank on the board.", "seasons", 3),
 )
+# The badges a host hears about (NetBBS door API 5, `achievement`). The host
+# asks for top-tier achievements only, and announces at most a dozen events an
+# hour: the badges everybody earns on a first night would be the channel's
+# whole budget. A tier and a medal are reported as their own event types.
+BADGE_NEWS = frozenset({"book", "ice", "deep", "ring", "raider", "ops", "speed"})
 # Stats that record a high-water mark rather than a running count.
 CAREER_PEAKS = {"best_rank", "most_held", "most_crew", "best_rig"}
 # Attempts, counted beside the successes above so a SysOp can read a success
@@ -1737,6 +1742,8 @@ class DashboardState:
     recent: list[GameEvent] = field(default_factory=list)
     book: int = 0  # carriers in the black book that have not gone cold
     cased: Lead | None = None  # the carrier a saved operation has cased
+    # The caller's lifetime counts, for the first-week goals.
+    career: dict[str, int] = field(default_factory=dict)
 
 
 EVENT_HISTORY_LIMIT = 500
@@ -2812,6 +2819,7 @@ def _archive_season(conn: sqlite3.Connection, old: int, current: int, now: datet
                         medals=int(bool(medal)), best_rank=player['rank'])
     _GAME_EVENTS.event("medal", f"Season {old}",
                        user_ids=[player['user_id'] for player in players[:3] if player['rank'] > 0])
+    _GAME_EVENTS.event("season", f"season {current}, {SEASON.days} days for ten exchanges")
     _GAME_EVENTS.season_reset(current)
     # Bounded by retained history, even after a very long absence.
     for number in range(max(old + 1, current - SEASON_ARCHIVE_LIMIT), current):
@@ -3085,7 +3093,7 @@ class _GameEvents:
     archives it, exactly once.
     """
 
-    TYPES = ("rank", "medal", "capture")
+    TYPES = ("rank", "achievement", "medal", "capture", "season")
 
     def __init__(self) -> None:
         self.directory: Path | None = None
@@ -3147,7 +3155,9 @@ class _GameEvents:
         if not self.active or kind not in self.types:
             return
         body: dict = {"type": kind}
-        if user_ids is not None:
+        if kind == "season":
+            pass  # names nobody: the host refuses one that carries a caller
+        elif user_ids is not None:
             if not user_ids:
                 return
             body["user_ids"] = list(user_ids[:3])
@@ -3502,7 +3512,7 @@ def dashboard_state(conn: sqlite3.Connection, user_id: int, now: datetime) -> Da
         return DashboardState(player, holdings, new_events, anchor + player.season_number * SEASON,
                               blocked[0] if blocked else None, scene,
                               history_events(conn, user_id, limit=SWITCHBOARD_FEED_LIMIT), book,
-                              cased_lead(conn, player))
+                              cased_lead(conn, player), read_career(conn, user_id)["stats"])
 
 
 def load_or_create_player(conn: sqlite3.Connection, user_id: int, handle: str, now: datetime, season_number: int) -> Player:
@@ -3597,6 +3607,10 @@ def career_bump(conn: sqlite3.Connection, user_id: int, at: datetime, *, player:
     names = {key: name for key, name, _, _, _ in BADGES}
     for key in earned:
         badges[key] = to_iso(at)[:10]
+        if not receipt and key in BADGE_NEWS:
+            # Earned by this session's own action, so it is live news; a badge
+            # awarded while its caller was away (`receipt`) never is.
+            _GAME_EVENTS.event("achievement", names[key].title(), user_id=user_id)
         if receipt:
             # The caller's own receipt: read already, so it never rings as news.
             record_event(conn, user_id, None,
@@ -7751,13 +7765,38 @@ def dashboard_notes(state: DashboardState, now: datetime) -> list[str]:
     return notes
 
 
+# A caller's first week, as six things to have done once. Each is read off
+# the rap sheet, so the list needs no state of its own, is never shown again
+# once it is finished, and does not restart with a season. No reward: the
+# reward is knowing the six things the game is made of.
+# The rap-sheet stat, and the sentence that says how, with its key.
+FIRST_GOALS: tuple[tuple[str, str], ...] = (
+    ("sweeps", "[D] Dial, then [S] Sweep a prefix and see what answers."),
+    ("carriers", "[D] Dial and pick a number: crack your first carrier."),
+    ("captures", "[X] Root a free exchange: it pays you by the hour."),
+    ("recruits", "[C] Crew recruits: more crew, better odds on everything."),
+    ("digs", "When a hack lands, [D] digs deeper for more Rank. Try it."),
+    ("best_rig", "[S] Kit sells a faster modem: better sweeps, and Rank."),
+)
+
+
+def first_goal(career: dict[str, int]) -> tuple[int, str] | None:
+    """How many of the first-week goals are done, and the next one; None when all are."""
+    done = sum(1 for stat, _ in FIRST_GOALS if career.get(stat, 0) > 0)
+    for stat, how in FIRST_GOALS:
+        if career.get(stat, 0) <= 0:
+            return done, how
+    return None
+
+
 def next_move(state: DashboardState, now: datetime) -> str:
     """The one thing worth doing next, in a sentence with its key.
 
     The switchboard's first page says this and nothing else by way of advice:
     the full list of facts and deadlines is on the pages after it. A caller who
-    is out of something hears about that first, then about the black book,
-    which is where a turn is best spent.
+    is out of something hears about that first. A caller still in their first
+    week hears the next of its six goals. Everyone else hears about the black
+    book, which is where a turn is best spent.
     """
     player = state.player
     if player.turns_used >= TURNS_PER_DAY:
@@ -7775,11 +7814,14 @@ def next_move(state: DashboardState, now: datetime) -> str:
         if threat and threat[2]:
             return (f"{exchange_short_name(exchange)} is {threat[2]} defence short: {threat[0]} "
                     "will test it. [G] Garrison posts crew.")
+    # The goals are a first-tier caller's. Past it they have found their own
+    # way, and a list of basics reads as a lecture.
+    goal = first_goal(state.career) if tier_index(rank_score(player)) == 0 else None
+    if goal is not None:
+        return f"First week {goal[0]}/{len(FIRST_GOALS)}: {goal[1]}"
     if state.book:
         return (f"{counted(state.book, 'carrier')} in your black book: [D] Dial hacks "
                 f"{'it' if state.book == 1 else 'one'} before it goes cold.")
-    if rank_score(player) == 0 and not state.holdings:
-        return "First night: [D] Dial sweeps for carriers to hack; [X] Root takes a free exchange."
     return "Your black book is empty: [D] Dial sweeps a prefix for carriers to hack."
 
 
@@ -7981,27 +8023,53 @@ SWITCHBOARD_KEYS = (("D", "Dial", "Dial"),
                     ("E", "Map", "Map"), ("V", "Rivals", "Rival"), ("H", "Log", "Log"),
                     ("I", "Scene", "Scene"), ("?", "Help", "Help"), ("Q", "Quit", "Quit"))
 
+# What a caller still in the first tier is shown: the keys a first night
+# needs, and [M] More for the rest. Sixteen keys was the first thing a new
+# caller met, most of them for things they could not do yet. Every key works
+# whether it is shown or not, and the full bar is the only one from the
+# second tier on.
+# Eight, because eight is one row of an eighty-column terminal and two of a
+# forty-column one.
+STARTER_KEYS = (("D", "Dial", "Dial"), ("J", "Job", "Job"), ("X", "Root", "Root"),
+                ("C", "Crew", "Crew"), ("T", "Trade", "Trade"),
+                ("M", "More", "More"), ("?", "Help", "Help"), ("Q", "Quit", "Quit"))
+# The way back, on the prompt row beside the page turns: a seventeenth key in
+# the bar itself cost it a third row.
+FEWER_KEY = ("M", "Fewer", "Fewer")
+
 # Paging shares the prompt row rather than the action bar: the bar is already
 # four rows of a twelve-row terminal, and the keys that move between pages
 # belong beside the cursor that is waiting for one.
 PAGE_KEYS = (("N", "Next", "Next"), ("P", "Prev", "Prev"))
 
 
-def switchboard_bar(p: Palette, width: int, budget: int) -> list[str]:
-    """Every action key, packed into the rows the screen can spare.
+def switchboard_keys(player: Player, expanded: bool) -> tuple:
+    """The keys this caller's switchboard advertises."""
+    if tier_index(rank_score(player)) > 0 or expanded:
+        return SWITCHBOARD_KEYS
+    return STARTER_KEYS
+
+
+def switchboard_bar(p: Palette, width: int, budget: int, keys: tuple = SWITCHBOARD_KEYS) -> list[str]:
+    """The action keys, packed into the rows the screen can spare.
 
     Short labels are the only thing ever spent -- never a key, and never a label
     entirely: the bare-key strip this used below forty columns went with those
     terminals (issue #495).
     """
-    return key_bar(p, SWITCHBOARD_KEYS, width, budget)
+    return key_bar(p, keys, width, budget)
 
 
 def draw_dashboard(p: Palette, state: DashboardState, now: datetime, width: int,
-                   height: int, page_index: int = 0) -> tuple[int, int]:
-    """Render the switchboard: one card stack, with the action keys always visible."""
+                   height: int, page_index: int = 0, *, expanded: bool = True) -> tuple[int, int]:
+    """Render the switchboard: one card stack, with the action keys always visible.
+
+    `expanded` is the session's own [M] More: a caller in the first tier sees
+    the starter keys until they ask for all of them.
+    """
     width = max(1, width - 1)
-    bar = switchboard_bar(p, width, max(1, min(2, height - 5)))
+    bar = switchboard_bar(p, width, max(1, min(2, height - 5)),
+                          switchboard_keys(state.player, expanded))
     capacity = max(1, height - len(bar) - 1 - frame_cost(p, width))
     inner = _panel_width(p, width)
     cards = dashboard_cards(p, state, now, inner)
@@ -8021,7 +8089,9 @@ def draw_dashboard(p: Palette, state: DashboardState, now: datetime, width: int,
                trailing=page_note(page_index, len(pages)))
     for row in bar:
         out_line(row)
-    paging = " ".join(key_bar(p, PAGE_KEYS, width, 1)) if len(pages) > 1 else ""
+    turns = (PAGE_KEYS if len(pages) > 1 else ()) + (
+        (FEWER_KEY,) if expanded and tier_index(rank_score(state.player)) == 0 else ())
+    paging = " ".join(key_bar(p, turns, width, 1)) if turns else ""
     out_prompt((paging + "   " if paging else "   ")
                + sty(p.grey, "dial") + " " + sty(p.phosphor + BOLD, gl("prompt")) + " ")
     return page_index, len(pages)
@@ -8256,6 +8326,8 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "stake; any key skips motion anywhere it plays.",
         "[I] Scene / Your rap sheet keeps your lifetime record and the badges you have earned. It "
         "survives every season and grants nothing but the record.",
+        "Until your first tier the switchboard shows the keys a first night needs, and [M] More "
+        "shows them all. Every key works whether it is shown or not.",
         "[N] Next/[P] Prev page; [B] Back leaves a screen; [Q] Quit leaves the game from the "
         "switchboard. Use separate single keys.",
     )),
@@ -9909,11 +9981,15 @@ def do_dial(p: Palette, conn: sqlite3.Connection, player: Player, rng: random.Ra
                      lead.id != player.operation_lead) for lead in leads]
         key = pick_record_page(
             p, "WAR DIALER", [], width, height, rendered=rendered, before=[("", summary)],
-            heading="BLACK BOOK", extra=(("S", "Sweep", "Sweep"),),
+            heading="BLACK BOOK", extra=(("S", "Sweep", "Sweep"), ("O", "Ops", "Ops")),
             empty="No numbers yet. [S] Sweep dials a prefix and writes down every carrier that "
                   "answers; each one is a system you can hack once.")
         if key in "BQ":
             return
+        if key == "O":
+            # An operation can case one of these numbers, so the way to it is here too.
+            do_operations_hub(p, conn, player, rng, width, height)
+            continue
         try:
             if key == "S":
                 if not confirm_action(p, conn, player, "sweep", width, height):
@@ -10983,6 +11059,7 @@ def _main(argv=None) -> int:
         show_event_history(palette, conn, player.user_id, w, height, unseen_only=True)
 
         page_index = 0
+        expanded = False   # [M] More, for this session
         while True:
             previous_season = player.season_number
             screen_now = now_utc()
@@ -10995,10 +11072,12 @@ def _main(argv=None) -> int:
                 # Also a resize that arrived while another screen was open.
                 _OUTPUT_WIDTH, height = size
                 w, page_index = apply_layout(_OUTPUT_WIDTH), 0
-            page_index, page_count = draw_dashboard(palette, state, screen_now, w, height, page_index)
+            page_index, page_count = draw_dashboard(palette, state, screen_now, w, height, page_index,
+                                                    expanded=expanded)
             # Always recognize action keys: a displayed zero-turn snapshot
             # may sit idle past its refill. The transaction decides allowance.
-            valid = "BEVHQ?TCJRXGSONPID"
+            # Every key answers whether the bar is showing it or not.
+            valid = "BEVHQ?TCJRXGSONPIDM"
             choice = read_menu_choice(valid, follow_resize=True)
             if choice == RESIZED:
                 continue  # the top of the loop takes the new size and redraws
@@ -11010,6 +11089,8 @@ def _main(argv=None) -> int:
                     page_index = min(page_index + 1, page_count - 1)
                 elif choice == "P":
                     page_index = max(0, page_index - 1)
+                elif choice == "M":
+                    expanded = not expanded
                 elif choice == "?":
                     draw_help(palette, w, height)
                 elif choice == "B":

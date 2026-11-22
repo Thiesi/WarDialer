@@ -393,6 +393,51 @@ Heat-riding and digging policies' average Rank by +8%, -3% and +5%: the wider
 pool varies the days without unbalancing them. The probe cannot reach the last
 three days (it stops at twenty-one), so the finale's stakes are unmeasured.
 
+## A first week
+
+Sixteen keys were the first thing a new caller met, most of them for things
+they could not do yet, with one line of advice under them. None of this
+changes saved data.
+
+**Starter keys.** A caller still in the first tier is shown eight keys: Dial,
+Job, Root, Crew, Trade, More, Help and Quit. `[M] More` shows all sixteen for
+the session, with `[M] Fewer` beside the page turns to go back. Every key
+answers whether it is shown or not, so nothing a caller has learned stops
+working, and from the second tier on the full bar is the only bar. Eight keys
+are one row of an eighty-column terminal and two of a forty-column one, where
+sixteen were two and four.
+
+This is narrower than the plan it replaces. The plan was to fold Kit into
+Crew, Garrison into Map and Ops into Dial, and advertise about nine keys to
+everyone. Folded, the most common purchase in the game, a recruit, would have
+cost a key more on every use, and every caller would have had to relearn the
+bar. Showing fewer keys to the caller who is overwhelmed, and no fewer to the
+one who is not, answers the finding without either cost. One fold was kept
+where it is natural: the dialer offers `[O] Ops`, because an operation can
+case one of its numbers.
+
+**Six goals.** The switchboard's next move, for a caller in the first tier,
+is the next of six things to have done once: sweep a prefix, crack a carrier,
+root an exchange, recruit, dig, and buy a faster modem. Each is read off the
+rap sheet, so the list has no state of its own, is never shown again once it
+is finished, and does not restart with a season. There is no reward. What a
+caller is out of (turns, Heat room, crew, a defence that is short) still comes
+first.
+
+**Game events.** NetBBS accepts an `achievement` and a `season` event beside
+the three the door already sent. The door reports seven badges as
+achievements, the ones that take work: Black Book, Ice Breaker, Deep Dive,
+Full Ring, Raider, Operator and High Speed. NetBBS asks for top-tier
+achievements only and announces a dozen events an hour, and the badges every
+caller earns on a first night would be that whole budget. A tier and a medal
+stay their own event types. A badge awarded while its caller is away is never
+reported. A `season` event, which names nobody, is sent by the session that
+archives the old season, to a host that lists the type.
+
+**The real-host checklist.** `docs/real-host-checklist.md` is what the
+repository cannot check: real terminals, a real host, more than one caller,
+and the first week of real play read back through `--admin stats`.
+
 ## Measuring play
 
 Rules are changed against measurements, and two kinds exist.

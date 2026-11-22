@@ -158,6 +158,10 @@ WALKS: dict[str, list[tuple[str, bytes]]] = {
         # columns and fourteen at forty, where the gauges, the scene, the feed,
         # the orders and the season card each get their own (issue #494).
         ("Switchboard", b"N%"),
+        # The fixture's caller is still in the first tier, so the walk above is
+        # the starter bar. [M] More is the only way to the full one, which every
+        # caller past that tier sees and no other panel would show.
+        ("Switchboard, every key", b"M"),
         ("BBS scene", b"I"),
         ("Crew insignia", b"I1?"),
         ("Insignia preview", b"I1?1?"),
@@ -474,6 +478,7 @@ SHOWS: dict[str, dict[str, str]] = {
         "While you were away": "WHILE YOU WERE AWAY",
         "Switchboard, season closing": "SEASON RESET",
         "Switchboard": "SWITCHBOARD",
+        "Switchboard, every key": "Fewer",
         "BBS scene": "BBS SCENE",
         "Crew insignia": "CREW INSIGNIA",
         "Insignia preview": "INSIGNIA PREVIEW",

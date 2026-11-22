@@ -66,8 +66,10 @@ live. NetBBS's bot then announces it in chat and answers `!top wardialer`:
 | Event | When |
 |---|---|
 | `rank` | The caller reaches a new Rank tier during the session |
+| `achievement` | The caller earns one of the seven hard badges during the session |
 | `medal` | A season closes; gold, silver and bronze, from the session that archives it |
 | `capture` | The caller captures an exchange |
+| `season` | A new season starts, from the session that archives the old one |
 | standings | The current season's top ten changes, and an empty table after a season reset |
 
 Each request is renamed into the drop directory only after its action
@@ -162,7 +164,8 @@ production byte encoder and ANSI emulator, including 40/64/80-column layouts.
 import dependency. Without system timezone data, the door falls back to UTC.
 
 The [design](docs/design.md) and [engineering notes](docs/engineering-notes.md)
-carry the game's decisions from NetBBS. Older source comments and those
+carry the game's decisions from NetBBS. The [real-host checklist](docs/real-host-checklist.md)
+is what to verify on a real BBS and real terminals before announcing a release. Older source comments and those
 documents refer to NetBBS issues; imported commit messages qualify those
 references as `Thiesi/NetBBS#N`. Host runtime, resize, administration-wrapper
 and node-backup tests remain in NetBBS.
