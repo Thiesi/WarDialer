@@ -1381,6 +1381,46 @@ LEAD_SYSTEMS: tuple[tuple[str, int, str], ...] = (
     ("Central office switch console", 3, "M  00 TST 5 ESS"),
     ("Wire-room clearing terminal", 3, "CHALLENGE 4471 - RESPONSE:"),
     ("Long-lines network control", 3, "NCC> "),
+    # Appended, never reordered: a black book stores a system by its place in
+    # this list. Nineteen systems repeated inside a week of sweeping.
+    ("Answering machine at a dentist", 0, "YOU HAVE 3 NEW MESSAGES"),
+    ("Video store rental terminal", 0, "MEMBER NUMBER?"),
+    ("High school grade book", 0, "TEACHER ID:"),
+    ("Public library card catalog", 0, "SEARCH BY (A)UTHOR (T)ITLE:"),
+    ("Weather service teletype", 0, "FORECAST ZONE?"),
+    ("Laundromat change machine modem", 0, "COIN LEVEL OK"),
+    ("Church newsletter mailing list", 0, "WELCOME, VOLUNTEER"),
+    ("Arcade high-score uplink", 0, "ENTER INITIALS"),
+    ("Car dealership fax server", 0, "DOCUMENT QUEUE: 2"),
+    ("Hobby shop bulletin board", 0, "LOGON OR <N>EW USER:"),
+    ("Hospital pager gateway", 1, "PAGER ID:"),
+    ("Local newspaper wire desk", 1, "SLUG:"),
+    ("Real estate listing service", 1, "AGENT CODE:"),
+    ("Community college registrar", 1, "STUDENT OR STAFF?"),
+    ("Trucking firm dispatch board", 1, "UNIT / ROUTE:"),
+    ("Cable company billing node", 1, "ACCOUNT LOOKUP>"),
+    ("Hotel reservation system", 1, "PROPERTY CODE:"),
+    ("Stockbroker quote terminal", 1, "SYMBOL:"),
+    ("Law office document server", 1, "MATTER NUMBER:"),
+    ("Department store layaway mini", 1, "STORE-REGISTER-CLERK:"),
+    ("Airline reservations front end", 2, "SINE-IN:"),
+    ("Power utility load dispatcher", 2, "SUBSTATION?"),
+    ("State motor vehicle records", 2, "TERMINAL ID / OPR:"),
+    ("Hospital patient records mini", 2, "WARD AND BADGE:"),
+    ("Oil company seismic archive", 2, "PROJECT / TAPE:"),
+    ("Insurance claims mainframe", 2, "LOGON APPLID(CLAIMS)"),
+    ("Cellular carrier switch port", 2, "MSC> "),
+    ("University supercomputer queue", 2, "ALLOCATION:"),
+    ("Records office tax rolls", 2, "PARCEL NUMBER:"),
+    ("Satellite uplink control", 3, "TRANSPONDER LOCK REQUIRED"),
+    ("Aerospace design timeshare", 3, "CLEARANCE LEVEL?"),
+    ("National lab batch gateway", 3, "THIS SYSTEM IS MONITORED"),
+    ("Interbank settlement switch", 3, "TEST KEY:"),
+    ("Carrier billing clearinghouse", 3, "ORIGINATING OCN:"),
+    ("Reactor training simulator", 3, "MODE: TRAINING"),
+    ("Test range telemetry relay", 3, "AUTHENTICATE - 3 TRIES"),
+    ("Customs manifest database", 3, "PORT CODE / OFFICER:"),
+    ("Stock exchange order router", 3, "MEMBER FIRM ID:"),
 )
 # What a carrier pays out beyond cash, when the hack lands. Every perk is shown
 # in the black book: a sweep fingerprints what it finds, so planning around a
@@ -1431,6 +1471,8 @@ RIG_SPEEDS = (300, 1200, 2400, 9600, 14400, 28800)
 DIGS: tuple[tuple[float, int], ...] = ((0.25, 50), (0.35, 100), (0.55, 150))
 DIG_HEAT = 6
 DIG_TRACE_HEAT = 12
+OPERATION_ODDS = 0.15     # what casing and preparing add to an execution's odds
+OPERATION_RANK = 30       # an operation's own Rank, on top of a carrier's
 
 # ---------------------------------------------------------------------------
 # The rap sheet: what a caller has done across every season. A season wipes
@@ -1492,7 +1534,46 @@ LINE_CONDITIONS: tuple[tuple[str, str, str, dict[str, int]], ...] = (
     ("blood", "FRESH BLOOD", "New kids on the boards: recruits cost $20 less.", {"recruit": -20}),
     ("busy", "BUSY SIGNALS", "Modems answer everywhere: sweeps find +1 carrier.", {"finds": 1}),
     ("meet", "SCENE MEET", "The crews are watching: every clean hack earns +5 Rank.", {"rank": 5}),
+    ("payday", "PAYDAY", "Payroll runs tonight: Trades pay $10 more, hacks 10% more.",
+     {"trade": 10, "pay": 10}),
+    ("snap", "COLD SNAP", "Everyone is lying low: Heat gains 3 lower, payouts -10%.",
+     {"heat": -3, "pay": -10}),
+    ("shift", "DOUBLE SHIFT", "Operators on overtime: sweeps find +1, Heat gains +1.",
+     {"finds": 1, "heat": 1}),
+    ("rush2", "LAND RUSH", "Unguarded trunks: captures cost $25 less, Heat gains +2.",
+     {"capture": -25, "heat": 2}),
+    ("press", "HEADLINES", "The papers are on it: clean hacks +10 Rank, Heat gains +4.",
+     {"rank": 10, "heat": 4}),
+    ("air", "DEAD AIR", "Night operators asleep: a dig's trace is 10 points rarer.", {"dig": -10}),
+    ("quiet", "QUIET NIGHT", "Nothing moving out there: each Trade cools 3 more Heat.", {"cool": 3}),
+    ("defaults", "DEFAULT PASSWORDS", "Nobody changed them: hacks get +5 points of odds.",
+     {"odds": 5}),
+    # The season's acts. Not drawn: each is a fixed day of every season, set
+    # by LINE_ACTS below, and the stakes rise into the crackdown. They follow
+    # the daily conditions so that LINE_DAILY counts those alone.
+    ("grab", "LAND GRAB", "A fresh map: captures cost $20 less, recruits $15 less.",
+     {"capture": -20, "recruit": -15}),
+    ("half", "HALFTIME", "Half the season gone: sweeps find +1, clean hacks +5 Rank.",
+     {"finds": 1, "rank": 5}),
+    ("last", "LAST CALL", "Three days left: hack payouts +50%, Heat gains +3.",
+     {"pay": 50, "heat": 3}),
+    ("allin", "ALL IN", "Two days left: clean hacks +15 Rank, Heat gains +5.",
+     {"rank": 15, "heat": 5}),
+    ("eve", "CRACKDOWN EVE", "Feds at midnight: hacks +25 Rank, pay double, Heat +8.",
+     {"rank": 25, "pay": 100, "heat": 8}),
 )
+# How many of the conditions above are drawn day by day; the acts follow them.
+LINE_DAILY = 17
+# The day of the season each act falls on. A season that only ever drew from
+# one pool was the same on its twentieth day as on its fifth; the acts give it
+# a first night, a middle and a three-day finish in which the standings can
+# still move.
+LINE_ACTS = {1: "grab", SEASON.days // 2: "half", SEASON.days - 3: "last",
+             SEASON.days - 2: "allin", SEASON.days - 1: "eve"}
+# Which way each effect is good for a caller: a condition may cost something,
+# but never without giving something.
+LINE_GOOD = {"trade": 1, "pay": 1, "finds": 1, "rank": 1, "cool": 1, "odds": 1,
+             "heat": -1, "capture": -1, "recruit": -1, "dig": -1}
 _LINE_INDEX = 0   # which condition the last settled world boundary found
 _LINE_DAY = 0     # season * 100 + day of season: what a preview was taken under
 _LINE_ENDS: datetime | None = None
@@ -1709,9 +1790,14 @@ def _line_pick(world: str, season: int, day: int) -> int:
     `world` is the world's owner ID, so two boards do not share a calendar and
     one board's calendar does not move when its SysOp resets the season clock.
     """
-    picks = len(LINE_CONDITIONS) - 1
+    picks = LINE_DAILY - 1
     pick = 0
     for current in range(1, min(day, 400) + 1):
+        act = LINE_ACTS.get(current)
+        if act is not None:
+            # An act is its day's condition, whatever would have been drawn.
+            pick = next(index for index, entry in enumerate(LINE_CONDITIONS) if entry[0] == act)
+            continue
         roll = 1 + zlib.crc32(f"{world}/{season}/{current}".encode("utf-8")) % picks
         pick = roll if roll != pick else 1 + roll % picks
     return pick
@@ -1734,6 +1820,17 @@ def set_line_conditions(conn: sqlite3.Connection, season: int, now: datetime) ->
     owner = conn.execute("SELECT value FROM meta WHERE key='node_owner'").fetchone()
     _LINE_INDEX = _line_pick(owner[0] if owner else "", season, day)
     _LINE_DAY = season * 100 + min(day, 99)
+
+
+def hack_odds(crew: int, difficulty: int, *, operation: bool = False) -> float:
+    """The chance a contract, a carrier or an operation lands.
+
+    One place for it, so the preview's figure, the board's gauge and the roll
+    itself cannot disagree: crew against difficulty, an operation's edge, and
+    whatever the wire adds today, held to the usual ten-to-ninety.
+    """
+    chance = success_chance(crew, difficulty) + line_effect("odds") / 100
+    return clamp(chance + (OPERATION_ODDS if operation else 0), 0.10, 0.90)
 
 
 def recruit_cost(player: Player) -> int:
@@ -1926,7 +2023,7 @@ def apply_heat(player: Player, amount: float, rng: random.Random, *, action: str
 
 def trade_heat(player: Player) -> float:
     """What a Trade does to this caller's Heat: it cools, and never below zero."""
-    return max(-player.heat, adjusted_heat(player, "trade", TRADE_WAREZ_HEAT)) or 0
+    return max(-player.heat, adjusted_heat(player, "trade", TRADE_WAREZ_HEAT - line_effect("cool"))) or 0
 
 
 def roll_bust(player: Player, rng: random.Random) -> bool:
@@ -1966,7 +2063,7 @@ def action_trade_warez(player: Player, rng: random.Random) -> tuple[int, bool]:
     gain = rng.randint(*trade_payout_range(player))
     player.turns_trading += 1
     player.cash += gain
-    busted = apply_heat(player, TRADE_WAREZ_HEAT, rng)
+    busted = apply_heat(player, TRADE_WAREZ_HEAT - line_effect("cool"), rng)
     return gain, busted
 
 
@@ -1993,7 +2090,7 @@ def job_terms(choice: JobChoice) -> tuple[str, int, tuple[int, int], str, int, i
 def action_job(player: Player, rng: random.Random, choice: JobChoice = JobChoice(), *, operation: bool = False) -> tuple[str, bool, int, bool]:
     name, difficulty, (lo, hi), _, heat, loss = job_terms(choice)
     _note(player, "operation_tries" if operation else "contract_tries")
-    success = rng.random() < min(.9, success_chance(player.crew, difficulty) + (.15 if operation else 0))
+    success = rng.random() < hack_odds(player.crew, difficulty, operation=operation)
     if success:
         payout = rng.randint(lo * (2 if operation else 1), hi * (2 if operation else 1))
         player.cash += payout
@@ -2076,14 +2173,10 @@ def action_dial(player: Player, rng: random.Random, prefixes: list[str]) -> tupl
     return finds, busted
 
 
-OPERATION_ODDS = 0.15     # what casing and preparing add to an execution's odds
-OPERATION_RANK = 30       # an operation's own Rank, on top of a carrier's
-
 
 def lead_odds(player: Player, lead: Lead, *, operation: bool = False) -> float:
     """This caller's chance at a carrier, hacked cold or executed as an operation."""
-    chance = success_chance(player.crew, lead.difficulty)
-    return min(0.9, chance + OPERATION_ODDS) if operation else chance
+    return hack_odds(player.crew, lead.difficulty, operation=operation)
 
 
 def action_lead(player: Player, lead: Lead, rng: random.Random, *,
@@ -2162,6 +2255,7 @@ def dig_terms(player: Player) -> tuple[float, int] | None:
     if player.line_rank <= 0 or not 0 <= player.line_depth < len(DIGS):
         return None
     trace, share = DIGS[player.line_depth]
+    trace = clamp(trace + line_effect("dig") / 100, 0.05, 0.95)
     return trace, max(1, player.line_rank * share // 100)
 
 
@@ -7695,8 +7789,10 @@ def today_card(p: Palette, state: DashboardState, now: datetime,
     rows: list[str] = []
     heading = "TODAY"
     if not lines_switched_off():
-        _, name, blurb, effects = line_condition()
-        chip = badge(p, name, style=p.amber if effects else p.grey)
+        key, name, blurb, effects = line_condition()
+        # The season's last three days are lit as the alarm they are.
+        chip = badge(p, name, style=p.alarm if key in ("last", "allin", "eve") else
+                     p.amber if effects else p.grey)
         if _dlen(chip) + 3 + _dlen(blurb) <= width:
             rows += compose([chip, sty(p.ink if effects else p.grey, blurb)], width)
         else:
@@ -7810,7 +7906,11 @@ def dashboard_cards(p: Palette, state: DashboardState, now: datetime,
     reset = season_reset_notes(state, now)
     cards: list[tuple[str, list[str]]] = []
     if reset:
-        cards.append(("SEASON RESET", prose_card(p, reset, width)))
+        # The countdown opens the stack; what the reset takes is spelled out
+        # on the SEASON card after the cockpit. Printed here in full, seven
+        # rows of it pushed the ring off the first page for the two days the
+        # standings matter most.
+        cards.append(("SEASON RESET", prose_card(p, reset[:1], width)))
     if console:
         # The wide console (Carrier Detect, #24): the crew's instruments down
         # the left, the switch ring beside them, the same facts in the same
@@ -7867,7 +7967,8 @@ def dashboard_cards(p: Palette, state: DashboardState, now: datetime,
     if orders:
         cards.append(("ORDERS", prose_card(p, orders, width)))
     notes = [note for note in dashboard_notes(state, now)
-             if note not in reset and note != SEASON_AWARDS and not note.startswith("[I] Scene is free")]
+             if note not in reset[:1] and note != SEASON_AWARDS
+             and not note.startswith("[I] Scene is free")]
     cards.append(("SEASON", prose_card(p, notes, width)))
     return cards
 
@@ -8064,6 +8165,10 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "available crew left? Recruit or withdraw defenders before capturing again.",
         "The switchboard's TODAY card names the day's line condition: a bonus or a trade that "
         "applies to every crew until the wire changes. A season's first day is always clear.",
+        f"Five days of every season are fixed acts: Land Grab on day 2, Halftime on day "
+        f"{SEASON.days // 2 + 1}, and the last three days, Last Call, All In and Crackdown Eve, "
+        "when clean hacks are worth the most Rank of the season and every Heat gain is at its "
+        "highest.",
     )),
     ("MONEY AND CREW", (
         f"[T] Trade Warez: quick cash that cools {-TRADE_WAREZ_HEAT} Heat, "
@@ -9138,7 +9243,7 @@ def action_preview_lines(action: str, player: Player, target: Player | Exchange 
         lines.append("Gross payout: $30-$70, before any bust loss; no Rank. Burner Kit is preserved.")
     elif action == "job":
         name, difficulty, (lo, hi), approach, _, loss = job
-        odds = min(.9, success_chance(player.crew, difficulty) + (.15 if operation else 0))
+        odds = hack_odds(player.crew, difficulty, operation=operation)
         if operation:
             lo, hi = lo * 2, hi * 2
         award = 30 if operation else 15
@@ -9221,7 +9326,7 @@ def action_odds(action: str, player: Player, target, *, operation: bool = False)
         return lead_odds(player, target, operation=operation)
     if action == "job":
         difficulty = job_terms(target if isinstance(target, JobChoice) else JobChoice())[1]
-        return min(.9, success_chance(player.crew, difficulty) + (.15 if operation else 0))
+        return hack_odds(player.crew, difficulty, operation=operation)
     if action == "root" and isinstance(target, Exchange):
         return 1.0 if not exchange_occupied(target) else success_chance(player.crew,
                                                                        exchange_defense(target))
@@ -9386,11 +9491,17 @@ RESULT_FLAVOUR = {
     "rank": ("A clean signal carries your crew's name across the boards.",
              "Word spreads from board to board before the line even drops.",
              "By morning the handle is on every message base in the area code.",
-             "Somewhere a sysop reads the log twice and whistles."),
+             "Somewhere a sysop reads the log twice and whistles.",
+             "Three boards are already arguing about how you got in.",
+             "Your handle turns up in a text file nobody admits to writing.",
+             "The old hands nod. The new ones start taking notes."),
     "quiet": ("The line goes quiet as the crew closes the log.",
               "Dial tone. The crew wipes the session and moves on.",
               "The modem clicks off. Nobody was ever here.",
-              "Static, then silence. The night is still young."),
+              "Static, then silence. The night is still young.",
+              "The logs scroll on without you in them.",
+              "Somebody's phone bill just got longer. Not yours.",
+              "The crew splits the take and kills the lights."),
     # A dig's two endings, indexed by how deep the line had got.
     "held": ("The cursor blinks. Nobody on their end has looked up yet.",
              "Deeper in, and the logs still say nothing about you.",
@@ -9754,7 +9865,7 @@ def lead_entry_rows(p: Palette, lead: Lead, player: Player, now: datetime, width
     if cased:
         return rows + prose_rows(p, "Cased for your operation: it does not go cold. Back, then "
                                  "[O] Ops on the switchboard runs it.", width, style=p.grey)
-    chance = success_chance(player.crew, difficulty)
+    chance = hack_odds(player.crew, difficulty)
     gauge = max(5, min(8, width // 8))
     stakes = [sty(p.grey, "odds") + " "
               + meter(p, chance, 1.0, gauge, style=p.phosphor if chance >= 0.5 else p.amber)
@@ -10155,7 +10266,7 @@ def do_job(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
     gauge = max(6, min(14, inner // 4))
     rendered = []
     for name, difficulty, (lo, hi) in JOBS:
-        odds = success_chance(player.crew, difficulty)
+        odds = hack_odds(player.crew, difficulty)
         rows = prose_rows(p, name, inner - 4, style=p.mint + BOLD)
         rows += compose([sty(p.grey, "odds") + " "
                          + meter(p, odds, 1.0, gauge,

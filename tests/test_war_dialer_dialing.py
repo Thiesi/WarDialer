@@ -311,14 +311,33 @@ def test_the_wire_is_clear_on_day_one_and_never_repeats_a_day(lines):
 
 def test_every_condition_is_a_bonus_or_a_trade_and_fits_the_switchboard():
     keys = [key for key, _, _, _ in wd.LINE_CONDITIONS]
-    assert len(set(keys)) == len(keys) and wd.LINE_CONDITIONS[0][3] == {}
-    known = {"trade", "pay", "heat", "capture", "recruit", "finds", "rank"}
+    names = [name for _, name, _, _ in wd.LINE_CONDITIONS]
+    assert len(set(keys)) == len(keys) == len(set(names)) and wd.LINE_CONDITIONS[0][3] == {}
     for key, name, blurb, effects in wd.LINE_CONDITIONS:
-        assert set(effects) <= known
+        assert set(effects) <= set(wd.LINE_GOOD), key
         # A badge, a gap and the sentence on one row of an eighty-column frame.
         assert len(name) + 2 + 3 + len(blurb) <= 75, key
-        if effects.get("heat", 0) > 0:
-            assert effects.get("pay", 0) > 0     # more Heat is always paid for
+        # It may cost something, but never without giving something.
+        if effects:
+            assert any(value * wd.LINE_GOOD[effect] > 0 for effect, value in effects.items()), key
+    # The acts follow the daily conditions, and each has its day.
+    assert set(wd.LINE_ACTS.values()) == set(keys[wd.LINE_DAILY:])
+    assert sorted(wd.LINE_ACTS) == [1, 14, 25, 26, 27]
+
+
+def test_the_season_has_acts_on_fixed_days_and_dailies_between(lines):
+    world = "0123456789abcdef0123456789abcdef"
+    index = {key: place for place, (key, *_rest) in enumerate(wd.LINE_CONDITIONS)}
+    for season in (1, 2, 7):
+        for day, act in wd.LINE_ACTS.items():
+            assert wd._line_pick(world, season, day) == index[act]
+        others = [wd._line_pick(world, season, day) for day in range(1, 28) if day not in wd.LINE_ACTS]
+        # Every other day is drawn from the daily conditions, never an act or a clear wire.
+        assert all(1 <= pick < wd.LINE_DAILY for pick in others)
+    # The finish climbs: each of the last three days pays more Rank or cash and burns hotter.
+    last, allin, eve = (wd.LINE_CONDITIONS[index[key]][3] for key in ("last", "allin", "eve"))
+    assert last["heat"] < allin["heat"] < eve["heat"]
+    assert eve["rank"] > allin["rank"] and eve["pay"] > last["pay"]
 
 
 def _set_line(key):
@@ -352,6 +371,49 @@ def test_conditions_change_exactly_the_rules_they_name(world, lines):
     assert wd.lead_terms(lead)[4] == 35
     wd.action_job(player, Rolls(0.0), wd.JobChoice(0, 0))
     assert player.bonus_rank == 5
+
+
+def test_the_newer_conditions_reach_the_rules_they_name(world, lines):
+    conn, now, player = world
+    lead = _lead(conn, system=5, difficulty=3)
+    odds = (wd.hack_odds(player.crew, 2), wd.lead_odds(player, lead),
+            wd.lead_odds(player, lead, operation=True))
+    wd.open_line(player, 30)
+    trace = wd.dig_terms(player)[0]
+    player.heat = 50
+    assert wd.trade_heat(player) == wd.TRADE_WAREZ_HEAT
+    _set_line("defaults")
+    assert wd.hack_odds(player.crew, 2) == pytest.approx(odds[0] + 0.05)
+    assert wd.lead_odds(player, lead) == pytest.approx(odds[1] + 0.05)
+    assert wd.lead_odds(player, lead, operation=True) == pytest.approx(odds[2] + 0.05)
+    assert wd.action_odds("job", player, wd.JobChoice(0, 1)) == pytest.approx(odds[0] + 0.05)
+    assert wd.hack_odds(400, 1) == 0.9                                # still capped
+    _set_line("air")
+    assert wd.dig_terms(player)[0] == pytest.approx(trace - 0.10)
+    _set_line("quiet")
+    assert wd.trade_heat(player) == wd.TRADE_WAREZ_HEAT - 3
+    wd.action_trade_warez(player, Rolls(0.99))
+    assert player.heat == pytest.approx(50 + wd.TRADE_WAREZ_HEAT - 3)
+    _set_line("snap")
+    assert wd.adjusted_heat(player, "job", 15) == 12
+    assert wd.job_terms(wd.JobChoice(0, 1))[2] == (wd.JOBS[0][2][0] * 90 // 100, wd.JOBS[0][2][1] * 90 // 100)
+    _set_line("eve")
+    assert wd.lead_terms(lead)[4] == 30 + 25 and wd.adjusted_heat(player, "job", 15) == 23
+    assert wd.lead_terms(lead)[2] == (lead.pay_low * 2, lead.pay_high * 2)
+
+
+def test_new_systems_were_appended_and_every_tier_has_plenty(world):
+    # A black book stores a system by its place in the list: the first nineteen stay put.
+    assert wd.LEAD_SYSTEMS[0][0] == "Voicemail box at an ad agency"
+    assert wd.LEAD_SYSTEMS[15][0] == "Defense contractor timeshare"
+    assert wd.LEAD_SYSTEMS[18][0] == "Long-lines network control"
+    names = [name for name, _, _ in wd.LEAD_SYSTEMS]
+    assert len(names) == len(set(names)) >= 50
+    for tier in range(len(wd.LEAD_TIERS)):
+        assert sum(1 for _, system_tier, _ in wd.LEAD_SYSTEMS if system_tier == tier) >= 12
+    assert all(len(name) <= 36 and len(banner) <= 40 and name.isascii() and banner.isascii()
+               for name, _, banner in wd.LEAD_SYSTEMS)
+    assert len(wd.LEAD_SYSTEMS) <= 256                                # the column's own bound
 
 
 def test_the_switch_pins_a_clear_wire(world, monkeypatch):
