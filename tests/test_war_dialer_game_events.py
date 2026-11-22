@@ -254,3 +254,67 @@ def test_the_door_reads_its_switch_from_the_launch_metadata(tmp_path, monkeypatc
         assert wd._GAME_EVENTS.active and wd._GAME_EVENTS.directory == tmp_path / "outbound"
     finally:
         wd._GAME_EVENTS.configure({})
+
+
+# -- achievements and a new season (the overhaul's content) -------------------------
+
+def _carrier(conn, system, *, perk=""):
+    """Put one carrier in caller 1's book and return it."""
+    now = wd.now_utc()
+    lead_id = conn.execute(
+        "INSERT INTO leads(user_id,season,system,number,difficulty,pay_low,pay_high,perk,found_at,"
+        "expires_at) VALUES (1,1,?,'415-555-0142',1,100,155,?,?,?)",
+        (system, perk, wd.to_iso(now), wd.to_iso(now + wd.LEAD_LIFETIME))).lastrowid
+    return wd._row_to_lead(conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone())
+
+
+def test_a_hard_badge_earned_live_is_an_achievement_and_a_first_night_badge_is_not(db_path, events):
+    now = wd.now_utc()
+    conn, season = _setup(db_path, now)
+    player = _player(conn, 1, "alice", now, season)
+    wd._GAME_EVENTS.arm(conn, player)
+    # A soft carrier earns CARRIER DETECT, which everybody earns: not news.
+    wd.resolve_lead(conn, player, _carrier(conn, 0), now, FixedRandom(0.0))
+    assert [body["event"]["type"] for _, body in events() if "event" in body] == []
+    # An ice carrier earns ICE BREAKER, which is.
+    wd.resolve_lead(conn, player, _carrier(conn, 15), now, FixedRandom(0.0))
+    reported = [body["event"] for _, body in events() if "event" in body]
+    assert reported == [{"type": "achievement", "user_id": 1, "title": "Ice Breaker"}]
+    # (The fixture's crew of a thousand also earns CREW BOSS, which is not news either.)
+    assert {"carrier", "ice"} <= set(wd.read_career(conn, 1)["badges"])
+
+
+def test_every_announced_badge_is_a_real_one_and_the_easy_ones_are_left_out():
+    keys = {key for key, *_ in wd.BADGES}
+    assert wd.BADGE_NEWS <= keys
+    # Everybody's first night, and the two that are their own event types.
+    assert not wd.BADGE_NEWS & {"carrier", "root", "busted", "elite", "legend", "podium"}
+
+
+def test_a_badge_awarded_while_its_caller_is_away_is_not_an_achievement(db_path, events):
+    now = wd.now_utc()
+    conn, season = _setup(db_path, now)
+    player = _player(conn, 1, "alice", now, season, rank=200)
+    wd._GAME_EVENTS.arm(conn, player)
+    wd.settle_world(conn, now + wd.SEASON + timedelta(days=1))
+    kinds = [body["event"]["type"] for _, body in events() if "event" in body]
+    assert kinds == ["medal"]                                # the podium badge is not announced
+    assert "podium" in wd.read_career(conn, 1)["badges"]
+
+
+def test_a_new_season_is_announced_only_to_a_host_that_lists_it(tmp_path, db_path):
+    info, path = _info(tmp_path, types=["rank", "achievement", "medal", "capture", "season"])
+    wd._GAME_EVENTS.configure(info, path)
+    try:
+        now = wd.now_utc()
+        conn, season = _setup(db_path, now)
+        player = _player(conn, 1, "alice", now, season, rank=200)
+        wd._GAME_EVENTS.arm(conn, player)
+        wd.settle_world(conn, now + wd.SEASON + timedelta(days=1))
+        bodies = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((tmp_path / "outbound").iterdir())]
+        reported = [body["event"] for body in bodies if "event" in body]
+        assert [event["type"] for event in reported] == ["medal", "season"]
+        # It names nobody: the host refuses a season event that carries a caller.
+        assert reported[1] == {"type": "season", "title": f"season {season + 1}, 28 days for ten exchanges"}
+    finally:
+        wd._GAME_EVENTS.configure({})

@@ -965,3 +965,139 @@ def test_an_orphaned_home_is_retaken_without_a_player_to_credit(world):
     home = next(e for e in wd.list_exchanges(conn) if e.id == HARBOR)
     assert home.controller_user_id is None and home.npc_key == "relay"
     assert "from a departed crew" in wd.read_scene(conn)[0]["summary"]
+
+
+# -- a first week: fewer keys, six goals ----------------------------------------------
+
+def _fresh(tmp_path, name="fresh.db"):
+    """A world with one caller who has done nothing yet."""
+    conn = wd.connect(tmp_path / name)
+    wd.ensure_schema(conn)
+    now = wd.now_utc()
+    wd.get_or_create_season_anchor(conn, now)
+    wd.ensure_exchanges_seeded(conn, 1, now)
+    wd.load_or_create_player(conn, 1, "Zero", now, 1)
+    return conn, now
+
+
+def _bar(written) -> str:
+    """The rows under the switchboard's frame: its key bar and prompt."""
+    plain = _ANSI_RE.sub("", "".join(written)).replace("\r\n", "\n")
+    return plain.rsplit("╯", 1)[-1]
+
+
+def test_a_first_tier_caller_is_shown_the_starter_keys_until_they_ask_for_more(tmp_path, monkeypatch):
+    conn, now = _fresh(tmp_path)
+    state = wd.dashboard_state(conn, 1, now)
+    assert wd.switchboard_keys(state.player, False) == wd.STARTER_KEYS
+    written = _play(monkeypatch, [])
+    wd.draw_dashboard(_palette(), state, now, 79, 24, expanded=False)
+    bar = _bar(written)
+    for label in ("[D] Dial", "[J] Job", "[X] Root", "[C] Crew", "[T] Trade", "[M] More",
+                  "[?] Help", "[Q] Quit"):
+        assert label in bar, label
+    assert "[R] Raid" not in bar and "[O] Ops" not in bar and "[G]" not in bar and "[S]" not in bar
+    # One row of keys, then the prompt row: the eight fit an eighty-column bar.
+    assert len([row for row in bar.split("\n") if "[D] Dial" in row or "[Q] Quit" in row]) == 1
+    # Asked for, the whole bar, and the way back.
+    written.clear()
+    wd.draw_dashboard(_palette(), state, now, 79, 24, expanded=True)
+    bar = _bar(written)
+    assert "[R] Raid" in bar and "[O] Ops" in bar and "[M] Fewer" in bar
+    # Fewer sits on the prompt row, so the bar itself is still two rows.
+    assert "[M] Fewer" in bar.rstrip().split("\n")[-1]
+    conn.close()
+
+
+def test_the_starter_bar_is_half_the_rows_on_a_small_terminal(tmp_path):
+    conn, now = _fresh(tmp_path)
+    player = wd.refresh_player(conn, 1, now)
+    starter = wd.switchboard_bar(_palette(), 39, 2, wd.switchboard_keys(player, False))
+    full = wd.switchboard_bar(_palette(), 39, 2, wd.switchboard_keys(player, True))
+    assert len(starter) < len(full) and len(starter) <= 3
+    assert all(wd._dlen(row) <= 39 for row in starter + full)
+    conn.close()
+
+
+def test_from_the_second_tier_the_full_bar_is_the_only_bar(tmp_path):
+    conn, now = _painted_world(tmp_path)                       # a caller at Rank 520
+    player = wd.refresh_player(conn, 1, now)
+    assert wd.tier_index(wd.rank_score(player)) > 0
+    assert wd.switchboard_keys(player, False) == wd.switchboard_keys(player, True) == wd.SWITCHBOARD_KEYS
+    written = []
+    original, wd.out = wd.out, written.append
+    try:
+        wd.draw_dashboard(_palette(), wd.dashboard_state(conn, 1, now), now, 79, 24, expanded=True)
+    finally:
+        wd.out = original
+    assert "[M]" not in _ANSI_RE.sub("", "".join(written))    # nothing to go back to
+    conn.close()
+
+
+def test_every_starter_key_is_a_real_switchboard_key():
+    full = {key for key, _, _ in wd.SWITCHBOARD_KEYS}
+    assert {key for key, _, _ in wd.STARTER_KEYS} - {"M"} <= full
+    assert "M" not in full                                     # More is the bar's own
+
+
+def test_the_first_week_goals_are_read_off_the_rap_sheet_in_order(tmp_path):
+    conn, now = _fresh(tmp_path)
+    state = wd.dashboard_state(conn, 1, now)
+    assert state.career == {}
+    assert wd.next_move(state, now) == ("First week 0/6: [D] Dial, then [S] Sweep a prefix and see "
+                                        "what answers.")
+    # Sweep, and the next goal is the carrier it found.
+    found, _ = wd.resolve_dial(conn, state.player, now, Rolls(0.9))
+    state = wd.dashboard_state(conn, 1, now)
+    assert state.career["sweeps"] == 1
+    assert wd.next_move(state, now).startswith("First week 1/6: [D] Dial and pick a number")
+    wd.resolve_lead(conn, state.player, found[0], now, Rolls(0.0))
+    state = wd.dashboard_state(conn, 1, now)
+    assert wd.next_move(state, now).startswith("First week 2/6: [X] Root a free exchange")
+    # Goals done out of order still count: a dig before a root or a recruit.
+    wd.resolve_dig(conn, state.player, now, Rolls(0.99))
+    state = wd.dashboard_state(conn, 1, now)
+    assert wd.first_goal(state.career) == (3, wd.FIRST_GOALS[2][1])
+    conn.close()
+
+
+def test_what_a_caller_is_out_of_still_comes_before_a_goal(tmp_path):
+    conn, now = _fresh(tmp_path)
+    state = wd.dashboard_state(conn, 1, now)
+    state.player.crew = 1
+    assert "One crew member left" in wd.next_move(state, now)
+    state.player.crew, state.player.heat = 3, 75
+    assert "Close to the bust line" in wd.next_move(state, now)
+    conn.close()
+
+
+def test_the_goals_end_with_the_first_tier_or_when_all_six_are_done(tmp_path):
+    conn, now = _fresh(tmp_path)
+    state = wd.dashboard_state(conn, 1, now)
+    state.career = {stat: 1 for stat, _ in wd.FIRST_GOALS}
+    assert wd.first_goal(state.career) is None
+    assert "black book is empty" in wd.next_move(state, now)
+    # Unfinished, but past the first tier: no lecture.
+    state.career = {}
+    state.player.bonus_rank = 100
+    assert "First week" not in wd.next_move(state, now)
+    conn.close()
+
+
+def test_every_goal_reads_a_stat_the_sheet_keeps_and_names_a_key():
+    kept = {key for key, _ in wd.CAREER_COUNTS} | wd.CAREER_PEAKS | set(wd.CAREER_TRIES)
+    for stat, how in wd.FIRST_GOALS:
+        assert stat in kept, stat
+        assert how.startswith("[") or "[D]" in how
+        assert len("First week 0/6: " + how) <= 75           # one row of the TODAY card
+
+
+def test_the_dialer_opens_the_operations_screen(tmp_path, monkeypatch):
+    conn, now = _painted_world(tmp_path)
+    player = wd.refresh_player(conn, 1, now)
+    written = _play(monkeypatch, ["O", "B", "B"])              # Ops, back to the dialer, leave
+    wd.do_dial(_palette(), conn, player, Rolls(0.0), 79, 24)
+    titles = _titles(written)
+    assert "OPERATIONS / RECON" in titles and titles.count("WAR DIALER") == 2
+    assert "[O] Ops" in _ANSI_RE.sub("", "".join(written))
+    conn.close()
