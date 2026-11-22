@@ -257,6 +257,94 @@ Operators' clocks reuse `exchanges.npc_return_at`, which a caller-held home
 never used before; a home held since before the rule starts its grace at the
 first settle rather than being tested at once.
 
+## Pressing your luck (world schema 13)
+
+The measurement below found Heat working as a budget with a cliff and the best
+play a calculation: spend it to the line and stop. Four changes follow from
+that. Each was probed before it was kept, and one was thrown out on its
+numbers.
+
+**Digging.** A contract, a carrier or an operation that lands, without a bust,
+leaves its line open. Its result offers `[D] Dig deeper` beside the any-key
+continue; any other key hangs up. A dig costs no turn, adds 6 Heat with the
+ordinary bust roll, and is allowed with no turns left.
+
+| Dig | The trace lands | Adds to what is carried |
+| --- | --- | --- |
+| 1 | 25% | 50% of the hack's own Rank |
+| 2 | 35% | 100% |
+| 3 | 55% | 150% |
+
+What a dig adds is *carried*, not credited. It becomes Rank when the caller
+hangs up: any other key on the offer, any later action, a season closing, or
+the third dig holding, which is the last and hangs up for them. A trace loses
+everything carried, adds 12 Heat and drops the line; so does a bust on the
+Heat a dig adds. Rank that has been credited is never taken back, so Rank
+stays monotonic, and the hack's own Rank and payout were earned before the
+first dig and are never at stake. The first two digs are worth taking in
+expectation and the third is a long shot on purpose.
+
+Each dig is its own committed transaction, so nothing happens between a
+decision and its commit, and a caller who drops carrier on the offer has hung
+up with what they carried. The offer is validated against the line that is
+still open: a second session acting in between hangs it up, and one dig is
+never committed twice.
+
+Digs were first paid in cash, as a share of the hack's payout, and measured.
+At these shares the digging probe banked up to $77,000 over three weeks and
+ran crews past 130, because a carrier's payout already scales with crew. At
+half of them it finished *behind* a caller who spent the same Heat on more
+hacks, so nobody chasing Rank would dig. Rank has no economy to flood and is
+what a caller is there for.
+
+**Trade cools.** A Trade takes 3 Heat off instead of adding 2, never below
+zero, and above the line still rolls on what is left. Measured, a Trade was
+what every policy fell back on with the Heat budget spent, and then it made
+the Heat worse. Now the fallback is also the way back under the line. The
+Heat chip beside the gauge is judged on where Heat stands, where it used to
+be judged on what a Trade would leave.
+
+**Operations can case a carrier.** Three turns on a standing contract earned
+less Rank a turn than running it cold, and carriers widened that. An
+operation's target is now a contract, as before, or a carrier from the black
+book, offered after the five contracts, hardest first. A cased number is
+pinned: it does not go cold and a sweep into a full book does not drop it,
+and it cannot be hacked cold while the operation holds it. Executing it has
+the operation's edge: +15 points of odds to the 90% cap, double the payout,
+and the operation's +30 Rank beside the carrier's own. A failed execution
+keeps the number and its casing, where a cold hack burns the number, which is
+what three turns on one number buy. Abandoning unpins it.
+
+**Raids are no longer blind, and a raided crew may strike back.** A rival's
+crew is public as a rough size (a handful, a small crew, a full crew, a big
+crew, an army) and never as a number. A raid's preview turns that into a range
+of odds that always holds the real figure. Exact strength and all cash stay
+private until recon buys them. This relaxes "available crew remains private"
+by exactly that much. For 48 hours after a raid on it, win or lose, the crew
+that was hit may raid its raider once whatever their shields or tier, at +10
+points of odds. A strike back hands none in return, so a feud is one exchange
+and not a loop. The window is read off the shield the raid left, so it needs
+no stored state.
+
+With all four in, twenty-one days over four seeds:
+
+| Policy | Rank | Busts | Crew at the end |
+| --- | --- | --- | --- |
+| `dialer`, careful | 3,100-3,415 | 0 | 71-80 |
+| `rider`, spends Heat to the line | 3,675-4,160 | 0 | 35-54 |
+| `digger`, also takes the first two digs while they fit | 4,371-5,242 | 0 | 64-82 |
+| `gambler`, digs every line out whatever the Heat | 3,505-4,829 | 6-10 | 14-37 |
+| `greedy`, ignores Heat on the hacks themselves | 2,455-2,805 | 19-24 | 1-3 |
+
+The best play now includes real gambles: the digger loses what it carries on
+about three digs in ten. Digging every line out is competitive but swings
+widely and wrecks the crew, and ignoring Heat outright is still the worst.
+
+**Schema 13** adds four player columns, all zero: `line_rank`, `line_depth`
+and `line_banked` (the open line: what the hack was worth, how many digs have
+held, and the Rank they carry), and `operation_lead` (the carrier an operation
+has cased). Nobody starts with a line open or a carrier cased.
+
 ## Measuring play
 
 Rules are changed against measurements, and two kinds exist.
@@ -277,7 +365,8 @@ one who ignores it is busted most days and ends with a handful of crew, and
 the best play is to spend it to the line and stop. That best play is a
 calculation, though, not a gamble: nothing in it is decided under uncertainty.
 `casual` plays the careful policy three days a week and reaches Hacker inside
-two weeks.
+two weeks. The table above is as these three stood before "Pressing your
+luck", which is what they led to; that section has the figures since.
 
 **Real play.** `--admin stats` sums every caller's rap sheet, read-only and
 without naming anyone: how a hundred turns were spent, how often one ended in
@@ -1103,7 +1192,7 @@ must be stopped and a verified backup taken before activation. Host ownership an
 maintenance checks precede conversion. Defense alone does not establish balanced play.
 
 **World schema compatibility.** SQLite `user_version=1` identifies the original
-War Dialer schema; the current version is 12. `user_version=2` added shared-crew
+War Dialer schema; the current version is 13. `user_version=2` added shared-crew
 resource semantics without
 changing its column layout. A complete unversioned world is adopted through a
 numbered migration; its additive fields, retained history and version marker

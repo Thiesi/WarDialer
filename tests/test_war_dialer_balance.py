@@ -118,6 +118,32 @@ def test_managed_risk_beats_both_careful_and_reckless_play():
     assert rider_actions.get('busts', 0) <= 2 and rider['total_crew'] >= 10
 
 
+def test_digging_is_worth_it_and_is_a_gamble():
+    """The best play includes digs, and a dig is lost often enough to be one.
+
+    A digger takes the first two digs on a line while they fit under the bust
+    line. It has to out-rank a caller who spends the same Heat on more hacks,
+    or nobody chasing Rank would dig; and it has to lose what it carries on a
+    real share of its digs, or the dig is a bonus and not a decision.
+    """
+    rider, _ = _finish('rider')
+    digger, actions = _finish('digger')
+    assert digger['rank'] > rider['rank']
+    assert actions['digs'] >= 20 and actions['dig_rank'] > 0
+    assert 0.15 <= actions['traces'] / actions['digs'] <= 0.45
+    assert actions.get('busts', 0) <= 2                       # it never digs past the line
+    # Paid in Rank, a dig floods no economy: the first design paid cash and
+    # ran crews past 130.
+    assert digger['total_crew'] <= 90
+
+
+def test_digging_every_line_out_costs_busts_and_crew():
+    digger, _ = _finish('digger')
+    gambler, actions = _finish('gambler')
+    assert actions['digs'] > 0 and actions.get('busts', 0) >= 2
+    assert gambler['total_crew'] < digger['total_crew']
+
+
 def test_a_three_day_a_week_caller_plays_every_visit_and_keeps_climbing():
     casual, actions = _finish('casual')
     assert actions['turns'] == 6 * 15                      # days 0, 2, 4, 7, 9 and 11

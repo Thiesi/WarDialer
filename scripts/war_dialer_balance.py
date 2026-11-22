@@ -45,6 +45,8 @@ SCENARIOS = {
     "casual": "The dialer policy, visiting three days a week (days 0, 2 and 4 of each seven).",
     "greedy": "One caller chases payout and ignores Heat: buys the next rig when it leaves $100, hacks the best-paying carrier at >=30% odds, sweeps while the book holds under three, recruits every third turn when able, else runs the best Bold contract at >=45%.",
     "rider": "The greedy policy while the action's Heat keeps the caller at or under the bust line; past it, the hottest contract approach that still fits, then a sweep, a recruit, and a Trade last.",
+    "digger": "The rider policy, which also takes the first two digs on every open line while a dig keeps it at or under the bust line.",
+    "gambler": "The rider policy, which also digs every open line out, all three digs, whatever the Heat.",
 }
 
 
@@ -164,10 +166,10 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                             action = "recruit"
                         elif player.operation_stage != 1 or player.cash >= 50:
                             action = ("case", "prepare", "execute")[player.operation_stage]
-                    elif name in {"greedy", "rider"}:
+                    elif name in {"greedy", "rider", "digger", "gambler"}:
                         leads = wd.read_leads(conn, uid, now)
                         # The rider only takes what leaves it at or under the bust line.
-                        room = wd.HEAT_BUST_THRESHOLD - player.heat if name == "rider" else 10_000
+                        room = wd.HEAT_BUST_THRESHOLD - player.heat if name != "greedy" else 10_000
                         ready = [lead for lead in leads
                                  if wd.success_chance(player.crew, lead.difficulty) >= .30
                                  and wd.adjusted_heat(player, "job", wd.lead_terms(lead)[3]) <= room]
@@ -251,10 +253,10 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                                 candidates = [i for i, (_, difficulty, _) in enumerate(wd.JOBS)
                                               if wd.success_chance(player.crew, difficulty) >= .6]
                                 choice = wd.JobChoice(max(candidates, default=0), 0)
-                            elif name in {"greedy", "rider"}:
+                            elif name in {"greedy", "rider", "digger", "gambler"}:
                                 candidates = [i for i, (_, difficulty, _) in enumerate(wd.JOBS)
                                               if wd.success_chance(player.crew, difficulty) >= .45]
-                                room = wd.HEAT_BUST_THRESHOLD - player.heat if name == "rider" else 10_000
+                                room = wd.HEAT_BUST_THRESHOLD - player.heat if name != "greedy" else 10_000
                                 # Bold while it fits; then the hottest approach that still does.
                                 fits = [index for index, (_, _, heat, _) in enumerate(wd.JOB_APPROACHES)
                                         if wd.adjusted_heat(player, "job", heat) <= room]
@@ -272,6 +274,18 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                         continue
                     totals[uid].update({action: 1, "turns": delta.turns, "busts": int(busted),
                                         "action_cash_delta": delta.cash, "rank_gained": delta.rank})
+                    # A hack that landed left its line open; the two digging
+                    # policies press it, each to its own limit.
+                    while name in {"digger", "gambler"} and wd.dig_terms(player) and (
+                            name == "gambler" or (player.line_depth < 2 and player.heat + wd.DIG_HEAT
+                                                  <= wd.HEAT_BUST_THRESHOLD)):
+                        dug = wd.ActionDelta()
+                        held, _, dig_bust = wd.resolve_dig(conn, player, now, rngs[uid], delta=dug)
+                        totals[uid].update(digs=1, traces=int(not held), busts=int(dig_bust),
+                                           dig_rank=dug.rank, rank_gained=dug.rank)
+                    if player.line_banked:
+                        carried = wd.resolve_hang_up(conn, player, now)
+                        totals[uid].update(dig_rank=carried, rank_gained=carried)
                     if name == "bust_recovery" and recovery_turn is None and player.crew >= wd.STARTING_CREW:
                         recovery_turn = totals[uid]["turns"] - 1  # Exclude the fixture's bust turn.
                 at = START + (day + 1) * wd.DAY - timedelta(microseconds=1)

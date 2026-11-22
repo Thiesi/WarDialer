@@ -1252,7 +1252,12 @@ TRADE_WAREZ_RANGE = (20, 60)
 TRADE_FULL_PAYOUTS = 3
 TRADE_TAPER_STEP = 5
 TRADE_TAPER_FLOOR = 40
-TRADE_WAREZ_HEAT = 2
+# Trade cools: it takes a little Heat off instead of adding it. Measured, a
+# Trade was already what a caller fell back on with the Heat budget spent, and
+# then it made the Heat worse; the careful and the reckless alike had no use
+# for it otherwise. Now the fallback is also the way back under the line. A
+# Trade above the line still rolls on what is left.
+TRADE_WAREZ_HEAT = -3
 ROOT_EXCHANGE_HEAT = 8
 RAID_HEAT = 10
 JOB_HEAT = 15
@@ -1406,6 +1411,28 @@ RIGS: tuple[tuple[str, int, int], ...] = (
 RIG_SPEEDS = (300, 1200, 2400, 9600, 14400, 28800)
 
 # ---------------------------------------------------------------------------
+# Digging: the gamble inside a hack. A successful contract, carrier or
+# operation leaves the line open, and from its result a caller may dig for
+# more or hang up. Measured, the best play had been to spend Heat to the bust
+# line and stop -- a calculation, with nothing in it decided under
+# uncertainty. A dig is: it costs no turn, adds Heat, and either adds to the
+# Rank the caller is carrying or trips the trace, which loses all of it.
+#
+# What is carried is not yet the caller's. It becomes Rank only when they
+# hang up, so a trace never takes Rank back and Rank stays monotonic. Digs
+# were first paid in cash and measured: at these shares the digging probe
+# banked up to $77,000 and ran crews past 130, and at half of them it fell
+# behind a caller who spent the same Heat on more hacks. Rank is what a
+# caller is here for, and it has no economy to flood.
+# Per dig: the chance the trace lands, and the share of the hack's own Rank
+# it adds. The first two are worth taking and the third is a long shot on
+# purpose.
+# ---------------------------------------------------------------------------
+DIGS: tuple[tuple[float, int], ...] = ((0.25, 50), (0.35, 100), (0.55, 150))
+DIG_HEAT = 6
+DIG_TRACE_HEAT = 12
+
+# ---------------------------------------------------------------------------
 # The rap sheet: what a caller has done across every season. A season wipes
 # cash, crew and Rank; this is the one thing that only ever grows, so a caller
 # who never places still has something to show for coming back. Stats climb,
@@ -1416,6 +1443,7 @@ BADGES: tuple[tuple[str, str, str, str, int], ...] = (
     ("carrier", "CARRIER DETECT", "Crack your first carrier.", "carriers", 1),
     ("book", "BLACK BOOK", "Crack 25 carriers.", "carriers", 25),
     ("ice", "ICE BREAKER", "Crack an ice-tier carrier.", "ice", 1),
+    ("deep", "DEEP DIVE", "Bank all three digs on one line.", "deep_dives", 1),
     ("till", "OPEN TILL", "Crack a jackpot carrier.", "jackpots", 1),
     ("root", "ROOT", "Capture your first exchange.", "captures", 1),
     ("trunk", "TRUNK LINE", "Hold three exchanges at once.", "most_held", 3),
@@ -1436,7 +1464,7 @@ CAREER_PEAKS = {"best_rank", "most_held", "most_crew", "best_rig"}
 # rate and an action mix out of real play (`--admin stats`). They are on the
 # sheet but not on the caller's screen: a caller wants the wins.
 CAREER_TRIES = ("turns", "trades", "contract_tries", "carrier_tries", "operation_tries",
-                "raid_tries", "root_tries")
+                "raid_tries", "root_tries", "digs", "traces")
 # The running counts, in the order the rap sheet prints them, with their labels.
 CAREER_COUNTS = (("sweeps", "sweeps dialed"), ("carriers", "carriers cracked"),
                  ("contracts", "contracts run"), ("operations", "operations pulled"),
@@ -1546,6 +1574,13 @@ class Player:
     turns_trading: int = 0  # Trades in the current turn-day (issue #649)
     rig: int = 0            # index into RIGS; resets with the season
     bonus_rank: int = 0     # Rank from carriers, rigs and line conditions
+    # The open line a hack leaves behind (schema 13): the Rank the hack was
+    # worth, which its digs are sized on, how many have held, and the Rank they
+    # are carrying -- the caller's only once they hang up, and lost to a trace.
+    line_rank: int = 0
+    line_depth: int = 0
+    line_banked: int = 0
+    operation_lead: int = 0  # the carrier an operation has cased, by its lead id
     # Read with the row and never stored on it, so they are not fields: the
     # crew posted across this caller's holdings, and the line-condition day the
     # snapshot was taken under (a preview from yesterday's wire is stale).
@@ -1620,6 +1655,7 @@ class DashboardState:
     scene: list[Exchange] = field(default_factory=list)
     recent: list[GameEvent] = field(default_factory=list)
     book: int = 0  # carriers in the black book that have not gone cold
+    cased: Lead | None = None  # the carrier a saved operation has cased
 
 
 EVENT_HISTORY_LIMIT = 500
@@ -1730,6 +1766,56 @@ def is_in_grace(player: Player, now: datetime) -> bool:
     return now - from_iso(player.created_at) < GRACE
 
 
+# A raid was a blind roll: the rival's crew was private, so its preview could
+# only say "10%-90%". A crew is now public as a rough size, never a number,
+# and the preview turns that into a range. The exact figure is still what
+# recon buys.
+# The largest crew each reading covers; anything bigger is the last reading.
+CREW_READS: tuple[tuple[int, str], ...] = ((3, "a handful"), (8, "a small crew"),
+                                           (20, "a full crew"), (50, "a big crew"))
+CREW_READ_MOST = "an army"
+# Raided crews may strike back: for this long after a raid on them, win or
+# lose, the crew that was hit may raid the one that did it whatever its
+# shields or tier, with better odds. One strike a raid suffered, and a strike
+# back hands no strike in return, so a feud is one exchange and not a loop.
+GRUDGE = timedelta(hours=48)
+GRUDGE_ODDS = 0.10
+
+
+def crew_read(crew: int) -> tuple[str, int, int | None]:
+    """A crew's public size: the words for it and the range they cover."""
+    low = 1
+    for most, words in CREW_READS:
+        if crew <= most:
+            return words, low, most
+        low = most + 1
+    return CREW_READ_MOST, low, None
+
+
+def grudge_until(player: Player) -> datetime | None:
+    """When this crew's right to strike back at its last raider runs out.
+
+    Read off the shield the raid left: no column records the raid's own time,
+    and none is needed.
+    """
+    if player.last_raided_by is None or not player.raid_shield_until:
+        return None
+    return from_iso(player.raid_shield_until) - RAID_SHIELD + GRUDGE
+
+
+def holds_grudge(attacker: Player, target: Player, now: datetime) -> bool:
+    until = grudge_until(attacker)
+    return attacker.last_raided_by == target.user_id and until is not None and now < until
+
+
+def raid_odds_band(attacker: Player, target: Player, now: datetime) -> tuple[float, float]:
+    """The worst and best odds a raid on `target` can have, from its crew's public size."""
+    _, low, most = crew_read(target.crew)
+    bonus = GRUDGE_ODDS if holds_grudge(attacker, target, now) else 0.0
+    worst = 0.10 if most is None else success_chance(attacker.crew, most)
+    return min(0.9, worst + bonus), min(0.9, success_chance(attacker.crew, low) + bonus)
+
+
 def raid_block(attacker: Player, target: Player, now: datetime) -> tuple[str, str]:
     """A one-word verdict and the full public reason for raiding `target`.
 
@@ -1738,6 +1824,8 @@ def raid_block(attacker: Player, target: Player, now: datetime) -> tuple[str, st
     """
     if target.user_id == attacker.user_id:
         return "you", "Your own crew"
+    if holds_grudge(attacker, target, now):
+        return "grudge", "Strike back until " + when(grudge_until(attacker))
     if is_in_grace(target, now):
         return "newcomer", ("Newcomer shield until "
                             + when(from_iso(target.created_at) + GRACE))
@@ -1754,7 +1842,7 @@ def raid_eligibility_reason(attacker: Player, target: Player, now: datetime) -> 
 
 
 def is_eligible_raid_target(attacker: Player, target: Player, now: datetime) -> bool:
-    return raid_eligibility_reason(attacker, target, now) == "Eligible"
+    return raid_block(attacker, target, now)[0] in ("eligible", "grudge")
 
 
 def reset_player_for_season(player: Player, season_number: int, now: datetime) -> None:
@@ -1786,6 +1874,8 @@ def reset_player_for_season(player: Player, season_number: int, now: datetime) -
     player.successful_operations = 0
     player.rig = 0
     player.bonus_rank = 0
+    close_line(player)
+    player.operation_lead = 0
     player.season_number = season_number
 
 
@@ -1828,10 +1918,15 @@ def apply_heat(player: Player, amount: float, rng: random.Random, *, action: str
     """Adds `amount` Heat and rolls the bust check. Returns whether a
     bust happened -- the caller narrates it; this function only applies
     the mechanical consequence."""
-    player.heat += adjusted_heat(player, action, amount)
+    player.heat = max(0.0, player.heat + adjusted_heat(player, action, amount))
     if action in {"job", "raid", "root"} and player.support == "burner":
         player.support = ""
     return roll_bust(player, rng)
+
+
+def trade_heat(player: Player) -> float:
+    """What a Trade does to this caller's Heat: it cools, and never below zero."""
+    return max(-player.heat, adjusted_heat(player, "trade", TRADE_WAREZ_HEAT)) or 0
 
 
 def roll_bust(player: Player, rng: random.Random) -> bool:
@@ -1912,6 +2007,8 @@ def action_job(player: Player, rng: random.Random, choice: JobChoice = JobChoice
         player.cash += payout
         player.crew = max(1, player.crew - loss)
     busted = apply_heat(player, heat, rng, action="job")
+    if success and not busted:
+        open_line(player, (30 if operation else 15) + line_effect("rank"))
     return name, success, payout, busted
 
 
@@ -1979,16 +2076,35 @@ def action_dial(player: Player, rng: random.Random, prefixes: list[str]) -> tupl
     return finds, busted
 
 
-def action_lead(player: Player, lead: Lead, rng: random.Random) -> tuple[bool, int, bool]:
-    """Hack one carrier out of the black book. Win or lose, the number is spent."""
+OPERATION_ODDS = 0.15     # what casing and preparing add to an execution's odds
+OPERATION_RANK = 30       # an operation's own Rank, on top of a carrier's
+
+
+def lead_odds(player: Player, lead: Lead, *, operation: bool = False) -> float:
+    """This caller's chance at a carrier, hacked cold or executed as an operation."""
+    chance = success_chance(player.crew, lead.difficulty)
+    return min(0.9, chance + OPERATION_ODDS) if operation else chance
+
+
+def action_lead(player: Player, lead: Lead, rng: random.Random, *,
+                operation: bool = False) -> tuple[bool, int, bool]:
+    """Hack one carrier out of the black book.
+
+    Hacked cold, the number is spent win or lose. As an operation's execution
+    it has the operation's edge -- better odds, double the payout and the
+    operation's Rank beside the carrier's -- and whether a failure keeps the
+    number is the operation's business, not this function's.
+    """
     _, difficulty, (low, high), heat, rank, loss = lead_terms(lead)
-    _note(player, "carrier_tries")
-    success = rng.random() < success_chance(player.crew, difficulty)
+    _note(player, "operation_tries" if operation else "carrier_tries")
+    success = rng.random() < lead_odds(player, lead, operation=operation)
     cold = success and lead.perk == "cool"
     if success:
-        payout = rng.randint(low, high)
+        payout = rng.randint(low, high) * (2 if operation else 1)
         player.cash += payout
         player.bonus_rank += rank
+        if operation:
+            player.successful_operations += 1
         if lead.perk == "crew":
             player.crew += 1
             player.crew_recruited_total += 1
@@ -2010,6 +2126,8 @@ def action_lead(player: Player, lead: Lead, rng: random.Random) -> tuple[bool, i
             payout += LEAD_KIT_CASH
         else:
             player.support = "burner"
+    if success and not busted:
+        open_line(player, rank + (OPERATION_RANK if operation else 0))
     return success, payout, busted
 
 
@@ -2017,9 +2135,70 @@ def rig_name(player: Player) -> str:
     return RIGS[max(0, min(player.rig, len(RIGS) - 1))][0]
 
 
+# -- digging --------------------------------------------------------------------
+
+def open_line(player: Player, rank: int) -> None:
+    """A hack that landed without a bust leaves its line open to dig on.
+    `rank` is what the hack itself was worth."""
+    player.line_rank, player.line_depth, player.line_banked = max(0, rank), 0, 0
+
+
+def close_line(player: Player) -> None:
+    """Drop the line and whatever it was carrying."""
+    player.line_rank = player.line_depth = player.line_banked = 0
+
+
+def hang_up(player: Player) -> int:
+    """Hang up clean: what the digs were carrying becomes Rank. Returns it."""
+    carried = player.line_banked
+    player.bonus_rank += carried
+    close_line(player)
+    return carried
+
+
+def dig_terms(player: Player) -> tuple[float, int] | None:
+    """The next dig on this caller's open line: the trace's chance and the Rank
+    it adds to what they carry. None when no line is open."""
+    if player.line_rank <= 0 or not 0 <= player.line_depth < len(DIGS):
+        return None
+    trace, share = DIGS[player.line_depth]
+    return trace, max(1, player.line_rank * share // 100)
+
+
+def action_dig(player: Player, rng: random.Random) -> tuple[bool, int, bool]:
+    """One dig: whether the line held, the Rank it added or lost, and a bust.
+
+    A dig that holds adds to what the caller carries; the third one is the
+    last and hangs up for them, with everything. A trace, or a bust on the
+    Heat a dig adds, loses what was carried. The hack's own Rank and payout
+    were earned before the first dig and are never at stake.
+    """
+    terms = dig_terms(player)
+    if terms is None:
+        raise ActionRejected("The line has dropped. Nothing spent.")
+    trace, gain = terms
+    _note(player, "digs")
+    if rng.random() < trace:
+        _note(player, "traces")
+        lost = player.line_banked
+        close_line(player)
+        return False, lost, apply_heat(player, DIG_TRACE_HEAT, rng, action="dig")
+    player.line_banked += gain
+    player.line_depth += 1
+    busted = apply_heat(player, DIG_HEAT, rng, action="dig")
+    if busted:
+        close_line(player)
+    elif player.line_depth >= len(DIGS):
+        _note(player, "deep_dives")
+        hang_up(player)
+    return True, gain, busted
+
+
 def action_raid(attacker: Player, target: Player, rng: random.Random, *, now: datetime | None = None) -> tuple[bool, int, bool]:
     _note(attacker, "raid_tries")
-    success = rng.random() < success_chance(attacker.crew, target.crew)
+    grudge = holds_grudge(attacker, target, now or now_utc())
+    chance = success_chance(attacker.crew, target.crew)
+    success = rng.random() < (min(0.9, chance + GRUDGE_ODDS) if grudge else chance)
     if success:
         amount = int(target.cash * RAID_STEAL_FRACTION)
         target.cash -= amount
@@ -2030,7 +2209,10 @@ def action_raid(attacker: Player, target: Player, rng: random.Random, *, now: da
         attacker.crew = max(1, attacker.crew - RAID_FAIL_CREW_LOSS)
         loss = int(attacker.cash * RAID_FAIL_CASH_LOSS_FRACTION)
         attacker.cash = max(0, attacker.cash - loss)
-    target.last_raided_by = attacker.user_id
+    if grudge:
+        attacker.last_raided_by = None   # spent: one strike back a raid suffered
+    else:
+        target.last_raided_by = attacker.user_id
     target.raid_shield_until = to_iso((now or now_utc()) + RAID_SHIELD)
     busted = apply_heat(attacker, RAID_HEAT, rng, action="raid")
     return success, amount, busted
@@ -2132,7 +2314,7 @@ def _resolve_db_path() -> Path:
     return Path.home() / ".netbbs" / "wardialer.db"
 
 
-WORLD_SCHEMA_VERSION = 12
+WORLD_SCHEMA_VERSION = 13
 _OPERATION_COLUMNS = {"operation_contract", "operation_approach", "operation_stage", "successful_operations"}
 
 # Versioned schema contract: future additions need a new numbered migration.
@@ -2193,6 +2375,8 @@ def _validate_world_layout(conn: sqlite3.Connection, version: int) -> None:
             expected = expected | {"turns_trading"}
         if version >= 12 and table == "players":
             expected = expected | {"rig", "bonus_rank"}
+        if version >= 13 and table == "players":
+            expected = expected | {"line_rank", "line_depth", "line_banked", "operation_lead"}
         if not expected <= columns:
             raise WorldStateError(f"War Dialer {table} schema is incomplete. Preserve it for SysOp recovery; no replacement was created.")
 
@@ -2280,6 +2464,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
                     fresh.execute("PRAGMA user_version=11")
                     _migrate_world_v12(fresh)
                     fresh.execute("PRAGMA user_version=12")
+                    _migrate_world_v13(fresh)
+                    fresh.execute("PRAGMA user_version=13")
             finally:
                 fresh.close()
             try:
@@ -2356,6 +2542,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         if version < 12:
             _migrate_world_v12(conn)
             conn.execute("PRAGMA user_version=12")
+        if version < 13:
+            _migrate_world_v13(conn)
+            conn.execute("PRAGMA user_version=13")
         _validate_world_layout(conn, WORLD_SCHEMA_VERSION)
 
 
@@ -2547,6 +2736,17 @@ def _migrate_world_v11(conn: sqlite3.Connection) -> None:
     """
     conn.execute("ALTER TABLE players ADD COLUMN turns_trading INTEGER NOT NULL DEFAULT 0 "
                  "CHECK (turns_trading >= 0)")
+
+
+def _migrate_world_v13(conn: sqlite3.Connection) -> None:
+    """The open line a hack leaves, and the carrier an operation has cased.
+
+    Everyone starts with no line open, nothing carried and no carrier cased: a
+    hack made before the upgrade was hung up on long ago.
+    """
+    for column in ("line_rank", "line_depth", "line_banked", "operation_lead"):
+        conn.execute(f"ALTER TABLE players ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0 "
+                     f"CHECK ({column} >= 0)")
 
 
 def _migrate_world_v12(conn: sqlite3.Connection) -> None:
@@ -3002,6 +3202,11 @@ def _settle_world(conn: sqlite3.Connection, now: datetime) -> int:
         set_line_conditions(conn, season, now)
         return season
 
+    if marker is not None and _world_schema_version(conn) >= 13:
+        # A line left open when the season closed is hung up first: what it
+        # carried was in hand, and belongs in the final Rank.
+        conn.execute("UPDATE players SET bonus_rank=bonus_rank+line_banked, line_rank=0, line_depth=0, "
+                     "line_banked=0 WHERE season_number < ? AND line_rank > 0", (season,))
     if marker is not None and _world_schema_version(conn) >= 10:
         _archive_season(conn, int(marker["value"]), season, now)
     if _world_schema_version(conn) >= 8:
@@ -3067,6 +3272,10 @@ def _row_to_player(row: sqlite3.Row) -> Player:
         turns_trading=row["turns_trading"] if "turns_trading" in row.keys() else 0,
         rig=row["rig"] if "rig" in row.keys() else 0,
         bonus_rank=row["bonus_rank"] if "bonus_rank" in row.keys() else 0,
+        line_rank=row["line_rank"] if "line_rank" in row.keys() else 0,
+        line_depth=row["line_depth"] if "line_depth" in row.keys() else 0,
+        line_banked=row["line_banked"] if "line_banked" in row.keys() else 0,
+        operation_lead=row["operation_lead"] if "operation_lead" in row.keys() else 0,
     )
 
 
@@ -3111,6 +3320,10 @@ def _save_player(conn: sqlite3.Connection, player: Player) -> None:
     if _world_schema_version(conn) >= 12:
         conn.execute("UPDATE players SET rig=?, bonus_rank=? WHERE user_id=?",
                      (player.rig, player.bonus_rank, player.user_id))
+    if _world_schema_version(conn) >= 13:
+        conn.execute("UPDATE players SET line_rank=?, line_depth=?, line_banked=?, operation_lead=? "
+                     "WHERE user_id=?", (player.line_rank, player.line_depth, player.line_banked,
+                                         player.operation_lead, player.user_id))
     _GAME_EVENTS.player_saved(player)
 
 
@@ -3188,11 +3401,14 @@ def dashboard_state(conn: sqlite3.Connection, user_id: int, now: datetime) -> Da
         blocked = conn.execute("SELECT handle FROM players WHERE user_id=?", (player.last_raided_by,)).fetchone()
         book = 0
         if _world_schema_version(conn) >= 12:
-            book = conn.execute("SELECT COUNT(*) FROM leads WHERE user_id=? AND season=? AND expires_at>?",
-                                (user_id, player.season_number, to_iso(now))).fetchone()[0]
+            book = conn.execute("SELECT COUNT(*) FROM leads WHERE user_id=? AND season=? "
+                                "AND (expires_at>? OR id=?)",
+                                (user_id, player.season_number, to_iso(now),
+                                 player.operation_lead)).fetchone()[0]
         return DashboardState(player, holdings, new_events, anchor + player.season_number * SEASON,
                               blocked[0] if blocked else None, scene,
-                              history_events(conn, user_id, limit=SWITCHBOARD_FEED_LIMIT), book)
+                              history_events(conn, user_id, limit=SWITCHBOARD_FEED_LIMIT), book,
+                              cased_lead(conn, player))
 
 
 def load_or_create_player(conn: sqlite3.Connection, user_id: int, handle: str, now: datetime, season_number: int) -> Player:
@@ -3311,13 +3527,20 @@ def actor_preview_state(player: Player) -> tuple:
 
 @contextmanager
 def _action_player(conn: sqlite3.Connection, snapshot: Player, now: datetime, *,
-                   require_preview: bool = False, delta: ActionDelta | None = None):
+                   require_preview: bool = False, delta: ActionDelta | None = None,
+                   spend: int = 1):
     """Serialize all sessions, including duplicate sessions for one player.
 
     Session objects are display snapshots only. Copy back the fresh actor only
     after COMMIT; rejected/failed writes cannot leave an apparent local reward.
     Heat/turn clocks settle before eligibility and use nondecreasing player
     time. A stale-season choice is rejected; the next refresh shows the new world.
+
+    `spend` is the turns the action costs. A dig costs none: it rides on the
+    hack that opened its line, so it is allowed with no turns left and starts
+    no turn window. Every action that does cost a turn hangs up an open line
+    before it runs, keeping what it carried -- a caller who dropped carrier on
+    the offer walked away with it -- and a hack then opens its own.
     """
     with _write_transaction(conn):
         season = _settle_world(conn, now)
@@ -3328,8 +3551,10 @@ def _action_player(conn: sqlite3.Connection, snapshot: Player, now: datetime, *,
             raise ActionRejected("Your resources changed during the preview. Review them again; nothing spent.")
         now = settle_player_clocks(player, now)
         player.cash += _collect_exchange_income(conn, player, now)
-        if player.turns_used >= TURNS_PER_DAY:
+        if spend and player.turns_used >= TURNS_PER_DAY:
             raise ActionRejected("No turns left. No resources spent.")
+        if spend:
+            hang_up(player)
         before = (player.cash, player.crew, player.heat, rank_score(player), player.turns_used)
         counted = (player.successful_jobs, player.successful_operations, player.successful_raids,
                    player.exchanges_taken_total, player.crew_recruited_total)
@@ -3337,15 +3562,15 @@ def _action_player(conn: sqlite3.Connection, snapshot: Player, now: datetime, *,
         if delta is not None:
             delta.badges.clear()
         yield player, now
-        if player.turns_used == 0:
+        if spend and player.turns_used == 0:
             player.turn_day_start = player.heat_updated_at
-        player.turns_used += 1
+        player.turns_used += spend
         _save_player(conn, player)
         assigned_after = assigned_crew(conn, player.user_id)
         # What the rules noted while they ran (a bust, each attempt), beside
         # what the monotonic counters say was won. Popped, so the snapshot
         # copied back below never carries a tally into the next action.
-        career_bump(conn, player.user_id, now, player=player, delta=delta, turns=1,
+        career_bump(conn, player.user_id, now, player=player, delta=delta, turns=spend,
                     contracts=player.successful_jobs - counted[0],
                     operations=player.successful_operations - counted[1],
                     raids=player.successful_raids - counted[2],
@@ -3368,6 +3593,41 @@ def resolve_trade_warez(conn: sqlite3.Connection, player: Player, now: datetime,
     return result
 
 
+def resolve_dig(conn: sqlite3.Connection, player: Player, now: datetime, rng: random.Random, *,
+                delta: ActionDelta | None = None) -> tuple[bool, int, bool]:
+    """Dig once on the line this caller's last hack left open. No turn is spent.
+
+    The line the caller was offered must be the line that is still open: a
+    second session acting in between hangs it up, and one dig is never
+    committed twice.
+    """
+    with _action_player(conn, player, now, delta=delta, spend=0) as (actor, _):
+        offered = (player.line_rank, player.line_depth, player.line_banked)
+        if dig_terms(actor) is None or (actor.line_rank, actor.line_depth, actor.line_banked) != offered:
+            raise ActionRejected("The line has dropped. Nothing spent.")
+        result = action_dig(actor, rng)
+    return result
+
+
+def resolve_hang_up(conn: sqlite3.Connection, player: Player, now: datetime, *,
+                    delta: ActionDelta | None = None) -> int:
+    """Hang up on an open line and keep what its digs were carrying.
+
+    Not an action: no turn, no Heat, no roll. Returns the Rank it was worth,
+    which is nothing when the line had already dropped.
+    """
+    with _write_transaction(conn):
+        actor = _refresh_player(conn, player.user_id, now)
+        carried = hang_up(actor) if actor.season_number == player.season_number else 0
+        if carried:
+            _save_player(conn, actor)
+            career_bump(conn, actor.user_id, now, player=actor, delta=delta)
+    player.__dict__.update(actor.__dict__)
+    if delta is not None:
+        delta.rank = carried
+    return carried
+
+
 def resolve_recruit(conn: sqlite3.Connection, player: Player, now: datetime, *, require_preview: bool = False, delta: ActionDelta | None = None) -> bool:
     with _action_player(conn, player, now, require_preview=require_preview, delta=delta) as (actor, now):
         if not action_recruit(actor):
@@ -3384,14 +3644,19 @@ def _row_to_lead(row: sqlite3.Row) -> Lead:
                 expires_at=row["expires_at"])
 
 
+# A carrier an operation has cased is pinned in the book: it does not go cold
+# and a sweep into a full book does not drop it. Ends each clean-up's WHERE.
+_NOT_CASED = "AND id NOT IN (SELECT operation_lead FROM players WHERE user_id=?)"
+
+
 def read_leads(conn: sqlite3.Connection, user_id: int, now: datetime) -> list[Lead]:
     """A caller's black book: this season's carriers that have not gone cold."""
     with _write_transaction(conn):
         season = _settle_world(conn, now)
         if _world_schema_version(conn) < 12:
             return []
-        conn.execute("DELETE FROM leads WHERE user_id=? AND (season<>? OR expires_at<=?)",
-                     (user_id, season, to_iso(now)))
+        conn.execute("DELETE FROM leads WHERE user_id=? AND (season<>? OR expires_at<=?) " + _NOT_CASED,
+                     (user_id, season, to_iso(now), user_id))
         return [_row_to_lead(row) for row in conn.execute(
             "SELECT * FROM leads WHERE user_id=? ORDER BY id", (user_id,))]
 
@@ -3406,8 +3671,8 @@ def resolve_dial(conn: sqlite3.Connection, player: Player, now: datetime, rng: r
     with _action_player(conn, player, now, require_preview=require_preview, delta=delta) as (actor, at):
         prefixes = [row[0].split()[0] for row in conn.execute("SELECT name FROM exchanges ORDER BY id")]
         finds, busted = action_dial(actor, rng, prefixes)
-        conn.execute("DELETE FROM leads WHERE user_id=? AND (season<>? OR expires_at<=?)",
-                     (actor.user_id, actor.season_number, to_iso(at)))
+        conn.execute("DELETE FROM leads WHERE user_id=? AND (season<>? OR expires_at<=?) " + _NOT_CASED,
+                     (actor.user_id, actor.season_number, to_iso(at), actor.user_id))
         found = []
         for system, number, difficulty, low, high, perk in finds:
             found.append(conn.execute(
@@ -3416,8 +3681,8 @@ def resolve_dial(conn: sqlite3.Connection, player: Player, now: datetime, rng: r
                 (actor.user_id, actor.season_number, system, number, difficulty, low, high, perk,
                  to_iso(at), to_iso(at + LEAD_LIFETIME))).lastrowid)
         conn.execute("DELETE FROM leads WHERE user_id=? AND id NOT IN "
-                     "(SELECT id FROM leads WHERE user_id=? ORDER BY id DESC LIMIT ?)",
-                     (actor.user_id, actor.user_id, BOOK_LIMIT))
+                     "(SELECT id FROM leads WHERE user_id=? ORDER BY id DESC LIMIT ?) " + _NOT_CASED,
+                     (actor.user_id, actor.user_id, BOOK_LIMIT, actor.user_id))
         leads = [_row_to_lead(row) for row in conn.execute(
             "SELECT * FROM leads WHERE user_id=? ORDER BY id", (actor.user_id,)) if row["id"] in found]
         career_bump(conn, actor.user_id, at, sweeps=1, delta=delta)
@@ -3436,6 +3701,9 @@ def resolve_lead(conn: sqlite3.Connection, player: Player, lead: Lead, now: date
         fresh = _row_to_lead(row)
         if fresh != lead:
             raise ActionRejected("That carrier changed. Review your black book; nothing spent.")
+        if fresh.id == actor.operation_lead:
+            raise ActionRejected("That number is cased for an operation. Run it from [O] Ops, or "
+                                 "abandon the operation first; nothing spent.")
         success, payout, busted = action_lead(actor, fresh, rng)
         conn.execute("DELETE FROM leads WHERE id=?", (fresh.id,))
         career_bump(conn, actor.user_id, at, carriers=int(success),
@@ -3444,12 +3712,24 @@ def resolve_lead(conn: sqlite3.Connection, player: Player, lead: Lead, now: date
     return success, payout, busted
 
 
-def operation_state(player: Player) -> tuple[int, int, int]:
-    return player.operation_contract, player.operation_approach, player.operation_stage
+def operation_state(player: Player) -> tuple[int, int, int, int]:
+    return (player.operation_contract, player.operation_approach, player.operation_stage,
+            player.operation_lead)
 
 
 def clear_operation(player: Player) -> None:
     player.operation_contract, player.operation_approach, player.operation_stage = -1, 1, 0
+    player.operation_lead = 0
+
+
+def cased_lead(conn: sqlite3.Connection, player: Player) -> Lead | None:
+    """The carrier this caller's operation has cased, if it has one and it is
+    still in their book. A cased number does not go cold and is not dropped."""
+    if not player.operation_lead or _world_schema_version(conn) < 13:
+        return None
+    row = conn.execute("SELECT * FROM leads WHERE id=? AND user_id=? AND season=?",
+                       (player.operation_lead, player.user_id, player.season_number)).fetchone()
+    return _row_to_lead(row) if row is not None else None
 
 
 def operation_block_reason(player: Player, step: str) -> str | None:
@@ -3463,12 +3743,30 @@ def operation_block_reason(player: Player, step: str) -> str | None:
 
 def resolve_operation(conn: sqlite3.Connection, player: Player, now: datetime, step: str,
                       rng: random.Random, *, choice: JobChoice | None = None,
+                      lead: Lead | None = None,
                       require_preview: bool = False, delta: ActionDelta | None = None):
+    """One step of the saved operation: case, prepare or execute.
+
+    The target is a standing contract (`choice`) or a carrier from the black
+    book (`lead`), fixed when it is cased. A cased carrier is pinned: it does
+    not go cold and a sweep does not drop it. Executing it has the operation's
+    edge, and a failed execution keeps the number where a cold hack burns it,
+    which is what three turns on one number buy.
+    """
     result = None
-    with _action_player(conn, player, now, require_preview=require_preview, delta=delta) as (actor, _):
+    with _action_player(conn, player, now, require_preview=require_preview, delta=delta) as (actor, at):
         if reason := operation_block_reason(actor, step):
             raise ActionRejected(reason)
-        if step == "case":
+        if step == "case" and lead is not None:
+            row = conn.execute("SELECT * FROM leads WHERE id=? AND user_id=? AND season=?",
+                               (lead.id, actor.user_id, actor.season_number)).fetchone()
+            if row is None or from_iso(row["expires_at"]) <= at:
+                raise ActionRejected("That number has gone cold. Sweep for fresh carriers; nothing spent.")
+            if _row_to_lead(row) != lead:
+                raise ActionRejected("That carrier changed. Review your black book; nothing spent.")
+            actor.operation_contract, actor.operation_approach = -1, 1
+            actor.operation_lead, actor.operation_stage = lead.id, 1
+        elif step == "case":
             if choice is None:
                 raise ActionRejected("Select a contract and approach first; nothing spent.")
             job_terms(choice)
@@ -3477,6 +3775,21 @@ def resolve_operation(conn: sqlite3.Connection, player: Player, now: datetime, s
         elif step == "prepare":
             actor.cash -= 50
             actor.operation_stage = 2
+        elif actor.operation_lead:
+            cased = cased_lead(conn, actor)
+            if cased is None:
+                raise ActionRejected("The cased number is gone. Abandon the operation from [O] Ops; "
+                                     "nothing spent.")
+            success, payout, busted = action_lead(actor, cased, rng, operation=True)
+            result = (f"{LEAD_SYSTEMS[cased.system][0]}, {cased.number}", success, payout, busted)
+            if success:
+                conn.execute("DELETE FROM leads WHERE id=?", (cased.id,))
+                clear_operation(actor)
+                career_bump(conn, actor.user_id, at, carriers=1,
+                            ice=int(lead_tier(cased) == len(LEAD_TIERS) - 1),
+                            jackpots=int(cased.perk == "jackpot"), delta=delta)
+            else:
+                actor.operation_stage = 1
         else:
             result = action_job(actor, rng, JobChoice(actor.operation_contract, actor.operation_approach), operation=True)
             if result[1]:
@@ -3780,12 +4093,15 @@ def resolve_raid(
         target.cash += _collect_exchange_income(conn, target, max(now, from_iso(target.heat_updated_at)))
         if not is_eligible_raid_target(actor, target, now):
             raise ActionRejected("Rival is no longer eligible after control Rank settlement. No resources spent.")
+        struck_back = holds_grudge(actor, target, now)
         success, amount, busted = action_raid(actor, target, rng, now=now)
         _save_player(conn, target)
+        # A raid hands its target a strike back; a strike back hands none.
+        strike = "" if struck_back else f" You may strike back for {GRUDGE // timedelta(hours=1)} hours."
         if success:
-            record_event(conn, target.user_id, actor.handle, f"{actor.handle} raided you and got away with ${amount}! All-attacker raid shield: 24 hours.", now)
+            record_event(conn, target.user_id, actor.handle, f"{actor.handle} raided you and got away with ${amount}! All-attacker raid shield: 24 hours." + strike, now)
         else:
-            record_event(conn, target.user_id, actor.handle, f"{actor.handle} tried to raid you and got bounced. All-attacker raid shield: 24 hours.", now)
+            record_event(conn, target.user_id, actor.handle, f"{actor.handle} tried to raid you and got bounced. All-attacker raid shield: 24 hours." + strike, now)
     return success, amount, busted
 
 
@@ -7266,6 +7582,8 @@ def next_steps(state: DashboardState, now: datetime) -> list[str]:
     if player.heat + TRADE_WAREZ_HEAT > HEAT_BUST_THRESHOLD:
         safe_at = from_iso(player.heat_updated_at) + timedelta(hours=(player.heat + TRADE_WAREZ_HEAT - HEAT_BUST_THRESHOLD) / HEAT_DECAY_PER_HOUR)
         lines.append(f"Trade without a bust roll in {countdown(safe_at - now)}. Recruitment adds no Heat.")
+    elif player.heat > HEAT_BUST_THRESHOLD - 10:
+        lines.append(f"Near the bust line: each [T] Trade takes {-TRADE_WAREZ_HEAT} Heat off.")
     if player.cash < recruit_cost(player):
         lines.append(f"Need ${recruit_cost(player) - player.cash} more to recruit. Trade needs no cash; inspect its Heat risk first.")
     if player.crew == 1:
@@ -7353,6 +7671,9 @@ def next_move(state: DashboardState, now: datetime) -> str:
         return f"Out of turns; refill in {refill}. [E] Map, [B] Rank and [H] Log stay free."
     if player.heat + TRADE_WAREZ_HEAT > HEAT_BUST_THRESHOLD:
         return "The line is hot: anything risky rolls for a bust. Wait it out, or [C] recruit."
+    if player.heat > HEAT_BUST_THRESHOLD - 10:
+        return (f"Close to the bust line. [T] Trade takes {-TRADE_WAREZ_HEAT} Heat off; "
+                "a hack past the line rolls for a bust.")
     if player.crew == 1:
         return "One crew member left: [C] recruit before anything risky."
     for exchange in state.holdings:
@@ -7387,16 +7708,17 @@ def today_card(p: Palette, state: DashboardState, now: datetime,
 
 
 def heat_chip(p: Palette, player: Player) -> str:
-    """The warning beside the Heat gauge, or nothing when there is no roll.
+    """The warning beside the Heat gauge, or nothing with room to spare.
 
-    Judged on what a trade *would leave*, not on where Heat stands: at 79 Heat a
-    trade crosses the threshold and rolls, so "near bust" was the wrong word for
-    it -- and the advice on the same screen already told the caller to wait.
+    Judged on where Heat stands. It used to be judged on what a Trade would
+    leave, because a Trade added Heat and was the least any action added; a
+    Trade cools now, so the line itself is the thing to warn about: past it
+    everything that adds Heat rolls, and within ten of it most hacks would
+    cross.
     """
-    projected = player.heat + adjusted_heat(player, "trade", TRADE_WAREZ_HEAT)
-    if projected > HEAT_BUST_THRESHOLD:
+    if player.heat > HEAT_BUST_THRESHOLD:
         return sty(p.alarm + BOLD, f"{gl('rise')} bust risk")
-    if projected > HEAT_BUST_THRESHOLD - 10:
+    if player.heat > HEAT_BUST_THRESHOLD - 10:
         return sty(p.amber, f"{gl('rise')} near bust")
     return ""
 
@@ -7455,7 +7777,7 @@ def dashboard_cards(p: Palette, state: DashboardState, now: datetime,
     else:
         refill = sty(p.grey, "window opens with your next action")
     operation = ("none" if not player.operation_stage else
-                 _fit(JOBS[player.operation_contract][0], 22)
+                 _fit(operation_target(player, state.cased), 22)
                  + (" - cased" if player.operation_stage == 1 else " - prepared"))
     book_chip = label_value(p, "BOOK", f"{state.book}/{BOOK_LIMIT}",
                             style=p.amber if state.book else p.grey)
@@ -7604,18 +7926,38 @@ def draw_dashboard(p: Palette, state: DashboardState, now: datetime, width: int,
     return page_index, len(pages)
 
 
+def _offer_bar(p: Palette, width: int, *, again: bool, dig: bool) -> list[str]:
+    """What a result offers beside its any-key continue: dig deeper, run it again.
+
+    One row, with the labels shortened before it is allowed to wrap: this is
+    the row the cursor waits on.
+    """
+    leave = "hangs up" if dig else "continues"
+    row = ""
+    for labels, hint in ((("Dig deeper", "Again"), "any other key " + leave),
+                         (("Dig", "Again"), "else " + leave)):
+        parts = ([keycap(p, "D") + " " + sty(p.mint, labels[0])] if dig else []) + (
+            [keycap(p, "A") + " " + sty(p.mint, labels[1])] if again else [])
+        row = "  ".join(parts) + sty(p.grey, "   " + hint)
+        if _dlen(row) <= width:
+            break
+    return [row]
+
+
 def show_text_pages(p: Palette, title: str, paragraphs: list[str], width: int, height: int,
                     *, more_before: bool = False, more_after: bool = False,
                     start_last: bool = False, onboarding: bool = False, accept: bool = False,
                     cards: list[tuple[str, list[str]]] | None = None,
-                    trailing: str = "", motion: bool = False, again: bool = False) -> str:
+                    trailing: str = "", motion: bool = False, again: bool = False,
+                    dig: bool = False) -> str:
     """Content first, bounded terminal pages; return an edge key to fetch another batch.
 
     `cards` is how a rebuilt screen hands over rows its own components already
     styled; `paragraphs` is the prose path, which styles what it wraps instead
     of flattening it and coloring the whole row from outside. `again` is for a
     result a caller may want straight back: its last page offers `[A] Again`
-    beside the any-key continue, and returns "A" for it.
+    beside the any-key continue, and returns "A" for it. `dig` offers `[D] Dig
+    deeper` the same way, for a result that left its line open.
     """
     width = max(1, width - 1)
     inner = _panel_width(p, width)
@@ -7624,8 +7966,7 @@ def show_text_pages(p: Palette, title: str, paragraphs: list[str], width: int, h
         blocks = [("", [sty(p.grey, "Nothing to show yet.")])]
     bars = {
         "onboarding": [sty(p.grey, "Press any key to continue...")],
-        "again": [keycap(p, "A") + " " + sty(p.mint, "Again")
-                  + sty(p.grey, "   any other key continues")],
+        "offer": _offer_bar(p, width, again=again, dig=dig),
         "accept": key_bar(p, ACCEPT_BAR, width, 1),
         "pages": key_bar(p, TEXT_BAR, width, 1),
     }
@@ -7646,7 +7987,7 @@ def show_text_pages(p: Palette, title: str, paragraphs: list[str], width: int, h
             for row in rows:
                 out_line(row)
         last = index == len(pages) - 1
-        bar = (bars["again"] if again and last else bars["onboarding"]) if onboarding else (
+        bar = (bars["offer"] if (again or dig) and last else bars["onboarding"]) if onboarding else (
             bars["accept"] if accept and last else bars["pages"])
         for row in bar[:-1]:
             out_line(row)
@@ -7662,6 +8003,8 @@ def show_text_pages(p: Palette, title: str, paragraphs: list[str], width: int, h
             key = read_menu_choice("NPBQ" + ("A" if accept and index == len(pages) - 1 else ""))
         if key == "A" and (not onboarding or (again and last)):
             return "A"
+        if key == "D" and onboarding and dig and last:
+            return "D"
         if key in ("B", "Q"):
             return "B"
         if onboarding:
@@ -7702,6 +8045,13 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "full book drops the oldest.",
         "Some carriers carry a perk, shown before you commit: a recruit, a cold trail that removes "
         "Heat, calling-card codes (a free Burner Kit) or a doubled payout.",
+        f"A hack that lands leaves its line open. From the result, [D] digs deeper: no turn, "
+        f"+{DIG_HEAT} Heat, and the line either holds, adding "
+        + "/".join(f"{share}%" for _, share in DIGS) + " of the hack's own Rank to what you carry, "
+        "or is traced (" + "/".join(f"{trace:.0%}" for trace, _ in DIGS) + "). What you carry "
+        "becomes Rank when you hang up: any other key, or any other action. A trace loses all of "
+        f"it, adds {DIG_TRACE_HEAT} Heat and drops the line. The hack's own Rank and payout are "
+        "never at stake.",
         "[S] Kit sells rigs. Each faster modem is worth Rank on install and makes every sweep "
         "likelier to find an extra carrier and a harder one. A rig lasts the season.",
     )),
@@ -7716,7 +8066,8 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "applies to every crew until the wire changes. A season's first day is always clear.",
     )),
     ("MONEY AND CREW", (
-        f"[T] Trade Warez: quick cash, ${TRADE_WAREZ_RANGE[0]}-${TRADE_WAREZ_RANGE[1]}; after "
+        f"[T] Trade Warez: quick cash that cools {-TRADE_WAREZ_HEAT} Heat, "
+        f"${TRADE_WAREZ_RANGE[0]}-${TRADE_WAREZ_RANGE[1]}; after "
         f"{TRADE_FULL_PAYOUTS} in one turn-day the top falls ${TRADE_TAPER_STEP} a Trade, to "
         f"${TRADE_TAPER_FLOOR}. "
         f"[C] Crew Recruit: ${RECRUIT_COST} buys +1 crew, ${RECRUIT_STEP} more for each member "
@@ -7735,15 +8086,22 @@ HELP_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "contracts pay more as your crew grows.",
         "[O] Ops: resume one three-step operation, buy rival recon, or read your latest ten "
         "24-hour dossiers. Steps cost turns; browsing and reconnecting never reroll outcomes.",
+        "An operation can case a carrier from your black book instead of a contract. A cased "
+        "number does not go cold, and a failed execution keeps it where a cold hack burns it. "
+        f"Success pays double and +{OPERATION_RANK} Rank beside the carrier's own.",
     )),
     ("RAIDS", (
         "[R] Raid: steal rival cash. [X] Root: take an exchange for hourly income.",
         "Raids respect a 48-hour newcomer shield and your tier +/-1. Any raid attempt gives its "
         "target 24 hours of protection from every attacker, win or lose. Login and reading "
         "receipts never clear it.",
-        "Rival Rank, shield reasons and expiry times are public. Available crew and cash stay "
-        "private; raid odds and payout remain explicitly uncertain. Exchange garrisons are public "
-        "and territory stays ungated.",
+        "Rival Rank, shield reasons and expiry times are public. A crew is public only as a rough "
+        "size (a handful, a small crew, a full crew, a big crew, an army), which a raid's preview "
+        "turns into a range of odds; the exact figure and all cash stay private until recon buys "
+        "them. Exchange garrisons are public and territory stays ungated.",
+        f"A crew that is raided may strike back: for {GRUDGE // timedelta(hours=1)} hours, win or "
+        f"lose, it may raid its raider once whatever their shields or tier, with +{GRUDGE_ODDS:.0%} "
+        "to its odds. A strike back hands none in return.",
     )),
     ("TERRITORY", (
         "[E] Map shows the fixed ring, roles, crew/security defense, capture prices and owner "
@@ -7887,7 +8245,7 @@ def rivals_cards(p: Palette, page: PlayerPage, user_id: int, width: int,
     rows, reasons = [], []
     for index, rival in enumerate(page.entries, page.offset + 1):
         verdict, reason = raid_block(page.player, rival, effective_now)
-        ok = verdict == "eligible"
+        ok = verdict in ("eligible", "grudge")
         rows.append([sty(p.grey, f"{index:>3}"),
                      (_fit(_event_plain(rival.handle), 20), p.magenta),
                      (tier_name(rank_score(rival)), p.cyan),
@@ -7899,8 +8257,8 @@ def rivals_cards(p: Palette, page: PlayerPage, user_id: int, width: int,
         if not ok and verdict != "you":
             reasons.append(f"{_event_plain(rival.handle)}: {reason}")
     cards: list[tuple[str, list[str]]] = [
-        ("", prose_card(p, ["Raid eligibility now. Crew strength and cash are not public "
-                            "intelligence. Back on the switchboard, [R] Raid picks a target and "
+        ("", prose_card(p, ["Raid eligibility now. A crew is public only as a rough size, and "
+                            "cash not at all. Back on the switchboard, [R] Raid picks a target and "
                             "[O] Ops buys a 24-hour snapshot."], width))]
     if rows:
         cards.append(("RIVAL CREWS",
@@ -8691,6 +9049,12 @@ def read_menu_choice(valid: str, *, follow_resize: bool = False) -> str:
             return key
 
 
+# One line under a hack's own terms: the dig is offered on the result, and a
+# caller should know it is coming before they pick how much Heat to spend.
+DIG_TERMS = (f"Success leaves the line open: up to {len(DIGS)} digs, each a gamble for more Rank "
+             f"at +{DIG_HEAT} Heat, with no turn spent.")
+
+
 def action_block_reason(action: str, player: Player, target: Exchange | Player | JobChoice | CrewChoice | None = None) -> str | None:
     reasons = []
     if player.turns_used >= TURNS_PER_DAY:
@@ -8736,7 +9100,7 @@ def action_preview_lines(action: str, player: Player, target: Player | Exchange 
         if target.role == "carrier":
             return lines + ["Guaranteed +1 available crew and +10 Rank. No Heat, bust roll or support consumption."]
     job = job_terms(target if isinstance(target, JobChoice) else JobChoice()) if action == "job" else None
-    heat = {"trade": TRADE_WAREZ_HEAT, "recruit": 0, "job": job[4] if job else JOB_HEAT,
+    heat = {"trade": trade_heat(player), "recruit": 0, "job": job[4] if job else JOB_HEAT,
             "raid": RAID_HEAT, "root": exchange_terms(target)[2] if action == "root" else ROOT_EXCHANGE_HEAT, "service": 4,
             "sweep": DIAL_HEAT, "carrier": lead_terms(target)[3] if action == "carrier" else 0}[action]
     if action == "sweep":
@@ -8746,15 +9110,21 @@ def action_preview_lines(action: str, player: Player, target: Player | Exchange 
                   "No cash, crew or Rank at stake."]
     elif action == "carrier":
         name, difficulty, (lo, hi), _, award, loss = lead_terms(target)
+        if operation:
+            lo, hi, award = lo * 2, hi * 2, award + OPERATION_RANK
         lines += [f"Carrier: {name} at {target.number}; {LEAD_TIERS[lead_tier(target)][0]} tier.",
-                  f"Success: {success_chance(player.crew, difficulty):.1%}; difficulty {difficulty}, "
+                  f"Success: {lead_odds(player, target, operation=operation):.1%}; difficulty {difficulty}, "
                   f"available crew {player.crew}.",
                   f"Success pays ${lo:,}-${hi:,} and +{award} Rank before any bust."]
         if target.perk:
             lines.append(f"{LEAD_PERKS[target.perk][0].title()}: {LEAD_PERKS[target.perk][1]}")
-        lines += [f"Failure loses {min(loss, player.crew - 1)} available crew before any bust; no cash penalty.",
-                  "One attempt: win or lose, the number is burned.",
-                  "Goes cold " + when(from_iso(target.expires_at)) + "."]
+        lines.append(f"Failure loses {min(loss, player.crew - 1)} available crew before any bust; no cash penalty.")
+        lines += (["Operation failure keeps the number and its casing; pay to Prepare again before "
+                   "another Execute.", "Cased: it does not go cold while the operation holds it."]
+                  if operation else
+                  ["One attempt: win or lose, the number is burned.",
+                   "Goes cold " + when(from_iso(target.expires_at)) + "."])
+        lines.append(DIG_TERMS)
     if action == "trade":
         low, high = trade_payout_range(player)
         lines.append(f"Gross payout: ${low}-${high}, before any bust loss.")
@@ -8777,13 +9147,24 @@ def action_preview_lines(action: str, player: Player, target: Player | Exchange 
                   f"Success pays ${lo}-${hi} and +{award} Rank before any bust.",
                   f"Failure loses {min(loss, player.crew - 1)} available crew before any bust; no cash penalty.",
                   "Operation failure retains casing; pay to Prepare again before another Execute." if operation else
-                  "Repeatable fixed contract: inspecting or reconnecting cannot reroll offers."]
+                  "Repeatable fixed contract: inspecting or reconnecting cannot reroll offers.",
+                  DIG_TERMS]
     elif action == "raid":
-        lines += [f"Rival: {target.handle}", "Success odds unknown (10%-90%): rival crew strength is private.",
+        words, low, most = crew_read(target.crew)
+        worst, best = raid_odds_band(player, target, now_utc())
+        lines += [f"Rival: {target.handle}",
+                  f"Their crew reads as {words} ({low}{'-' + str(most) if most else ' or more'}): your odds "
+                  f"are {worst:.0%}-{best:.0%}. The exact strength is private.",
                   f"Success steals {RAID_STEAL_FRACTION:.0%} of their unknown cash and earns +25 Rank.",
                   f"Failure loses {min(RAID_FAIL_CREW_LOSS, player.crew - 1)} crew and "
                   f"{RAID_FAIL_CASH_LOSS_FRACTION:.0%} cash before any bust.",
                   "Win or lose, the target gets a 24-hour shield against every attacker. Login and reading receipts do not clear it."]
+        if holds_grudge(player, target, now_utc()):
+            lines.append(f"Striking back: +{GRUDGE_ODDS:.0%} to your odds, and their shields and tier "
+                         "do not stop you. This spends your one strike, and hands them none.")
+        else:
+            lines.append(f"They may strike back for {GRUDGE // timedelta(hours=1)} hours: one raid on "
+                         "you that your shields and tier do not stop.")
     elif action == "root":
         chance = 1.0 if not exchange_occupied(target) else success_chance(player.crew, exchange_defense(target))
         lines += [f"Exchange: {target.name} - {exchange_terms(target)[0]}", f"Owner: {exchange_owner(target)}",
@@ -8805,7 +9186,8 @@ def action_preview_lines(action: str, player: Player, target: Player | Exchange 
         projected = player.heat + heat
         chance = min(HEAT_BUST_CHANCE_CAP, max(0, projected - HEAT_BUST_THRESHOLD) * HEAT_BUST_CHANCE_PER_POINT)
         risk = "under 0.1%" if 0 < chance < 0.001 else f"{chance:.1%}"
-        lines.append(f"Heat: {player.heat:.1f} + {heat} = {projected:.1f}; bust risk {risk} now.")
+        lines.append(f"Heat: {player.heat:.1f} " + (f"- {-heat:g}" if heat < 0 else f"+ {heat}")
+                     + f" = {projected:.1f}; bust risk {risk} now.")
         lines.append("Heat decays while you wait; the committed risk may be lower.")
         if chance:
             lines.append(f"A bust then keeps {1 - (.10 if player.support == 'stash' else BUST_CASH_LOSS_FRACTION):.0%} cash and "
@@ -8836,7 +9218,7 @@ def action_odds(action: str, player: Player, target, *, operation: bool = False)
     if action in ("trade", "recruit", "crew", "service", "sweep"):
         return 1.0
     if action == "carrier" and isinstance(target, Lead):
-        return success_chance(player.crew, target.difficulty)
+        return lead_odds(player, target, operation=operation)
     if action == "job":
         difficulty = job_terms(target if isinstance(target, JobChoice) else JobChoice())[1]
         return min(.9, success_chance(player.crew, difficulty) + (.15 if operation else 0))
@@ -8861,6 +9243,8 @@ def preview_heat(action: str, player: Player, target, *, operation: bool = False
         return adjusted_heat(player, action, 4) if target.role == "hub" else 0
     if action == "carrier" and isinstance(target, Lead):
         return adjusted_heat(player, "job", lead_terms(target)[3])
+    if action == "trade":
+        return trade_heat(player)
     job = job_terms(target if isinstance(target, JobChoice) else JobChoice()) if action == "job" else None
     base = {"trade": TRADE_WAREZ_HEAT, "recruit": 0, "job": job[4] if job else JOB_HEAT,
             "raid": RAID_HEAT, "sweep": DIAL_HEAT,
@@ -8888,7 +9272,16 @@ def stakes_cards(p: Palette, action: str, player: Player, target, width: int, *,
                                 f"/{TURNS_PER_DAY}", style=p.ink)], width)
     odds = action_odds(action, player, target, operation=operation)
     stakes: list[str] = []
-    if odds is None:
+    if odds is None and action == "raid" and isinstance(target, Player):
+        # A range, drawn to its middle: the rival's crew is public only as a size.
+        worst, best = raid_odds_band(player, target, now_utc())
+        middle = (worst + best) / 2
+        stakes += compose([sty(p.grey, "ODDS") + " "
+                           + meter(p, middle, 1.0, gauge, style=p.phosphor if middle >= 0.5 else p.amber)
+                           + " " + sty(p.cyan, f"{worst:.0%}-{best:.0%}"),
+                           label_value(p, "their crew", crew_read(target.crew)[0], style=p.magenta)],
+                          width)
+    elif odds is None:
         stakes += compose([sty(p.grey, "ODDS") + " " + sty(p.phosphor_dim, gl("meter_off") * gauge),
                            sty(p.cyan, "private (10%-90%)")], width)
     else:
@@ -8998,6 +9391,13 @@ RESULT_FLAVOUR = {
               "Dial tone. The crew wipes the session and moves on.",
               "The modem clicks off. Nobody was ever here.",
               "Static, then silence. The night is still young."),
+    # A dig's two endings, indexed by how deep the line had got.
+    "held": ("The cursor blinks. Nobody on their end has looked up yet.",
+             "Deeper in, and the logs still say nothing about you.",
+             "Every file they had, and the line never so much as clicked."),
+    "traced": ("Somewhere a line printer wakes up and starts on your number.",
+               "A tone you did not send. Somebody is on the line with you.",
+               "The screen fills with one word, over and over: TRACE."),
 }
 
 
@@ -9014,14 +9414,17 @@ def show_action_result(p: Palette, headlines: list[str], delta: ActionDelta, bus
                        width: int, height: int, *, player: Player | None = None,
                        scene: Callable[[], list[list[SplashOp]]] | None = None,
                        success: bool | None = None,
-                       cards: list[tuple[str, list[str]]] = (), again: bool = False) -> bool:
+                       cards: list[tuple[str, list[str]]] = (), again: bool = False,
+                       flavour: str = "") -> str:
     """The receipt for a committed action. A scene for it -- the action's own,
     a bust in its place, a promotion after -- opens it when one may play;
     otherwise the carrier sweep does.
 
     `success` is the roll the action already made, for the stamp at the top:
     None for an action that had no roll to win or lose. `again` offers the same
-    action's preview straight back; True means the caller asked for it."""
+    action's preview straight back. A result that left its line open offers a
+    dig, with its terms on the page. Returns "A" for again, "D" for a dig, and
+    "" for anything else the caller pressed."""
     inner = _panel_width(p, max(1, width - 1))
     if not play_scenes(p, width, height, outcome_scenes(p, player, delta, busted, headlines,
                                                         width, height, scene)):
@@ -9030,7 +9433,8 @@ def show_action_result(p: Palette, headlines: list[str], delta: ActionDelta, bus
     stamp = outcome_stamp(p, success, busted, inner) if not p.fast and height >= 20 else []
     rows = stamp + prose_card(p, headlines, inner)
     if not p.fast:
-        rows += prose_rows(p, result_flavour(player, delta, busted), inner, style=p.grey)
+        rows += prose_rows(p, flavour if flavour and not busted
+                           else result_flavour(player, delta, busted), inner, style=p.grey)
     if busted:
         rows.append(sty(p.alarm + BOLD,
                         _fit("*** BUSTED *** Heat reset; losses included below.", inner)))
@@ -9051,9 +9455,80 @@ def show_action_result(p: Palette, headlines: list[str], delta: ActionDelta, bus
         label_value(p, "turns spent", str(delta.turns), style=p.ink),
     ], inner)
     earned = [("BADGE EARNED", badge_rows(p, delta.badges, inner))] if delta.badges else []
-    return show_text_pages(p, "ACTION RESULT", [], width, height,
-                           cards=[("", rows), *cards, *earned, ("NET", net)], onboarding=True,
-                           motion=True, again=again) == "A"
+    # Last, nearest the prompt that asks about it. Only a hack that landed
+    # leaves a line open, and any other action hangs up, so this is on a
+    # contract's, a carrier's, an operation's and a dig's own result and
+    # nowhere else.
+    line = [("LINE OPEN", line_rows(p, player, inner))] if player is not None and dig_terms(player) else []
+    key = show_text_pages(p, "ACTION RESULT", [], width, height,
+                          cards=[("", rows), *cards, *earned, ("NET", net), *line], onboarding=True,
+                          motion=True, again=again, dig=bool(line))
+    return key if key in ("A", "D") else ""
+
+
+def line_rows(p: Palette, player: Player, width: int) -> list[str]:
+    """The next dig's terms: what it adds, how likely the line is to hold,
+    what is being carried, and the Heat either way."""
+    trace, gain = dig_terms(player)
+    gauge = max(5, min(12, width // 6))
+    heat = adjusted_heat(player, "dig", DIG_HEAT)
+    projected = player.heat + heat
+    chance = min(HEAT_BUST_CHANCE_CAP, max(0, projected - HEAT_BUST_THRESHOLD) * HEAT_BUST_CHANCE_PER_POINT)
+    rows = compose([label_value(p, f"dig {player.line_depth + 1}/{len(DIGS)}", f"+{gain} Rank", style=p.mint),
+                    sty(p.grey, "holds") + " "
+                    + meter(p, 1 - trace, 1.0, gauge, style=p.phosphor if trace < 0.5 else p.amber)
+                    + " " + sty(p.cyan, f"{1 - trace:.0%}"),
+                    label_value(p, "carrying", f"{player.line_banked} Rank",
+                                style=p.amber if player.line_banked else p.grey),
+                    sty(p.grey, "heat") + " " + sty(p.alarm, heat_amount(heat, signed=True))
+                    + sty(p.grey, f" = {projected:.0f}"),
+                    badge(p, f"BUST {chance:.0%}", style=p.alarm) if chance >= 0.01 else ""], width)
+    traced = f"adds {heat_amount(adjusted_heat(player, 'dig', DIG_TRACE_HEAT))} Heat and drops the line."
+    return rows + prose_rows(
+        p, (f"What you carry is yours once you hang up. A trace loses all {player.line_banked} of "
+            f"it, {traced}" if player.line_banked else
+            f"Nothing carried yet: a trace costs no Rank, but {traced}"), width, style=p.grey)
+
+
+def run_line(p: Palette, conn: sqlite3.Connection, player: Player, rng: random.Random,
+             width: int, height: int, key: str, *, again: bool = False) -> str:
+    """Dig for as long as the caller asks to and the line holds.
+
+    `key` is what the hack's result returned. Each dig is committed on its own
+    and shown on a result of its own, which makes the next offer. Any other
+    key hangs up, and a caller who hangs up carrying Rank is shown what it
+    came to. Returns "A" when the caller asked to run the action again.
+    """
+    while key == "D":
+        delta = ActionDelta()
+        depth = min(player.line_depth, len(DIGS) - 1)
+        try:
+            held, amount, busted = resolve_dig(conn, player, now_utc(), rng, delta=delta)
+        except ActionRejected as exc:
+            show_text_pages(p, "ACTION UNAVAILABLE", [str(exc)], width, height, onboarding=True)
+            return ""
+        if held and not busted and not dig_terms(player):
+            headline = f"Dug out. Everything you carried is yours: +{delta.rank} Rank."
+        elif held:
+            headline = (f"Deeper. {amount} more Rank in hand; hang up to keep "
+                        f"{'it' if player.line_banked == amount else 'all ' + str(player.line_banked)}.")
+        else:
+            headline = (f"Traced! The line drops and the {amount} Rank you carried goes with it."
+                        if amount else "Traced! The line drops. You were carrying nothing yet.")
+        key = show_action_result(p, [headline], delta, busted, width, height, player=player,
+                                 success=held, again=again,
+                                 flavour=RESULT_FLAVOUR["held" if held else "traced"][depth])
+    if player.line_banked:
+        delta = ActionDelta()
+        carried = resolve_hang_up(conn, player, now_utc(), delta=delta)
+        if carried:
+            # Shown rather than only logged: this is where the Rank arrives,
+            # and a tier it crosses gets its scene like any other.
+            after = show_action_result(p, [f"You hang up clean. The digs come to +{carried} Rank."],
+                                       delta, False, width, height, player=player, success=True,
+                                       again=again)
+            key = "A" if "A" in (key, after) else ""
+    return key
 
 
 PICK_KEYS = "1234567890"
@@ -9190,12 +9665,14 @@ def rival_entry_rows(p: Palette, attacker: Player, rival: Player, now: datetime,
     rows = compose([sty(p.magenta + BOLD, _fit(_event_plain(rival.handle), 22)),
                     badge(p, _fit(tier_name(rank_score(rival)).upper(), 16)),
                     label_value(p, "rank", f"{rank_score(rival):,}", style=p.mint)], width)
-    rows += compose([label_value(p, "raid", verdict,
-                                 style=p.phosphor if verdict == "eligible" else p.grey)], width)
+    rows += compose([label_value(p, "raid", "strike back" if verdict == "grudge" else verdict,
+                                 style=p.amber if verdict == "grudge" else
+                                 p.phosphor if verdict == "eligible" else p.grey),
+                     label_value(p, "crew", crew_read(rival.crew)[0], style=p.ink)], width)
     # The full reason only earns a row where it says something the verdict does
     # not: a shield names the moment it expires. "Eligible" under `raid eligible`
     # is the same word twice.
-    if verdict in ("newcomer", "recovering"):
+    if verdict in ("newcomer", "recovering", "grudge"):
         rows += prose_rows(p, reason, width, style=p.grey)
     if note:
         rows += prose_rows(p, note, width, style=p.grey)
@@ -9258,15 +9735,25 @@ def lead_tier_style(p: Palette, tier: int) -> str:
 
 def lead_entry_rows(p: Palette, lead: Lead, player: Player, now: datetime, width: int,
                     *, odds: bool = True) -> list[str]:
-    """One carrier as a black-book entry: its number, what answered, and the stakes."""
+    """One carrier as a black-book entry: its number, what answered, and the stakes.
+
+    A number an operation has cased says so and says where it is run from: it
+    stays in the book, pinned, but it is the operation's to hack.
+    """
     name, difficulty, (lo, hi), heat, rank, _ = lead_terms(lead)
     tier = lead_tier(lead)
+    cased = lead.id == player.operation_lead
     chips = [sty(p.amber + BOLD, lead.number),
              sty(p.mint + BOLD, _fit(name, max(12, width - 14))),
              badge(p, LEAD_TIERS[tier][0].upper(), style=lead_tier_style(p, tier))]
     if lead.perk:
         chips.append(badge(p, LEAD_PERKS[lead.perk][0], style=p.amber))
+    if cased:
+        chips.append(badge(p, "CASED", style=p.cyan))
     rows = compose(chips, width)
+    if cased:
+        return rows + prose_rows(p, "Cased for your operation: it does not go cold. Back, then "
+                                 "[O] Ops on the switchboard runs it.", width, style=p.grey)
     chance = success_chance(player.crew, difficulty)
     gauge = max(5, min(8, width // 8))
     stakes = [sty(p.grey, "odds") + " "
@@ -9307,7 +9794,8 @@ def do_dial(p: Palette, conn: sqlite3.Connection, player: Player, rng: random.Ra
                            label_value(p, "turns", f"{TURNS_PER_DAY - player.turns_used}/{TURNS_PER_DAY}",
                                        style=p.ink),
                            "" if p.fast else modem_leds(p, lit)], inner)
-        rendered = [(lead_entry_rows(p, lead, player, now, inner - 4), True) for lead in leads]
+        rendered = [(lead_entry_rows(p, lead, player, now, inner - 4),
+                     lead.id != player.operation_lead) for lead in leads]
         key = pick_record_page(
             p, "WAR DIALER", [], width, height, rendered=rendered, before=[("", summary)],
             heading="BLACK BOOK", extra=(("S", "Sweep", "Sweep"),),
@@ -9357,8 +9845,9 @@ def do_dial(p: Palette, conn: sqlite3.Connection, player: Player, rng: random.Ra
             handle=player.handle, contract=tier, approach=min(2, tier), success=success,
             payout=payout, crew_lost=max(0, -delta.crew), caption=lines[1], sub=lines[0],
             banner=_fit(name.upper(), 40), prompt=LEAD_SYSTEMS[lead.system][2])
-        show_action_result(p, lines, delta, busted, width, height, player=player, scene=scene,
-                           success=success)
+        run_line(p, conn, player, rng, width, height,
+                 show_action_result(p, lines, delta, busted, width, height, player=player,
+                                    scene=scene, success=success))
 
 
 def do_trade_warez(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
@@ -9374,17 +9863,36 @@ def do_trade_warez(p: Palette, conn: sqlite3.Connection, player: Player, now: da
     return False
 
 
-def operation_preview_lines(player: Player, step: str, choice: JobChoice) -> list[str]:
-    name, _, _, approach, _, _ = job_terms(choice)
-    lines = [f"Operation: {name} ({approach}).",
-             "Case: 1 turn. Prepare: 1 turn and $50. Execute: 1 turn; +15 percentage points odds (90% cap), double payout, +30 Rank on success.",
-             "Progress survives visits. Failure keeps casing; Prepare and Execute are needed to retry. Free abandon forfeits progress and refunds nothing."]
+def operation_target(player: Player, cased: Lead | None = None) -> str:
+    """What the saved operation is aimed at, in a few words."""
+    if player.operation_lead:
+        return (f"{LEAD_SYSTEMS[cased.system][0]}, {cased.number}" if cased is not None
+                else "a carrier that is gone")
+    return JOBS[player.operation_contract][0]
+
+
+def operation_preview_lines(player: Player, step: str, choice: JobChoice | Lead) -> list[str]:
+    carrier = isinstance(choice, Lead)
+    if carrier:
+        lines = [f"Operation: {LEAD_SYSTEMS[choice.system][0]} at {choice.number}.",
+                 "Case: 1 turn. Prepare: 1 turn and $50. Execute: 1 turn; +15 percentage points odds "
+                 f"(90% cap), double payout, and +{OPERATION_RANK} Rank beside the carrier's own.",
+                 "Progress survives visits, and a cased number does not go cold. Failure keeps the "
+                 "number and its casing; Prepare and Execute are needed to retry. Free abandon "
+                 "forfeits progress and refunds nothing."]
+        stakes = action_preview_lines("carrier", player, choice, operation=True)
+    else:
+        name, _, _, approach, _, _ = job_terms(choice)
+        lines = [f"Operation: {name} ({approach}).",
+                 "Case: 1 turn. Prepare: 1 turn and $50. Execute: 1 turn; +15 percentage points odds (90% cap), double payout, +30 Rank on success.",
+                 "Progress survives visits. Failure keeps casing; Prepare and Execute are needed to retry. Free abandon forfeits progress and refunds nothing."]
+        stakes = action_preview_lines("job", player, choice, operation=True)
     if step == "execute":
-        lines += action_preview_lines("job", player, choice, operation=True)
+        lines += stakes
     else:
         lines += [f"This step: {step.title()}, 1 turn and ${50 if step == 'prepare' else 0}.",
                   "No Heat, bust roll or support consumption. Execution stakes:"]
-        lines += action_preview_lines("job", player, choice, operation=True)[2:]
+        lines += stakes[2:]
     if reason := operation_block_reason(player, step):
         lines.append("Unavailable: " + reason)
     return lines
@@ -9394,47 +9902,73 @@ def do_operation(p: Palette, conn: sqlite3.Connection, player: Player, rng: rand
                  width: int, height: int) -> bool:
     update_display_player(p, player, refresh_player(conn, player.user_id, now_utc()), width, height)
     inner = _panel_width(p, max(1, width - 1))
-    chain = [("", operation_chain(p, player, inner))]
+    cased = cased_lead(conn, player)
+    chain = [("", operation_chain(p, player, inner, cased))]
     if not player.operation_stage:
         records = [([name, f"Difficulty {difficulty}; Standard payout ${lo*2}-${hi*2} on operation success.",
                      "Case then Prepare ($50), then Execute: 3 turns total. Preview follows."], True)
                    for name, difficulty, (lo, hi) in JOBS]
+        # The black book's carriers follow the five contracts, hardest first:
+        # the numbers worth three turns are the ones a cold hack would likely burn.
+        leads = sorted(read_leads(conn, player.user_id, now_utc()),
+                       key=lambda lead: (-lead_tier(lead), lead.id))[:len(PICK_KEYS) - len(JOBS)]
+        for lead in leads:
+            name, difficulty, (lo, hi), _, rank, _ = lead_terms(lead)
+            records.append(([f"Carrier {lead.number}: {name}",
+                             f"{LEAD_TIERS[lead_tier(lead)][0].title()} tier, difficulty {difficulty}; "
+                             f"operation payout ${lo*2:,}-${hi*2:,} and +{rank + OPERATION_RANK} Rank.",
+                             "Cased, it does not go cold, and a failed execution keeps the number."], True))
         key = pick_record_page(p, "CASE AN OPERATION", records, width, height, before=chain,
-                               heading="CONTRACTS")
+                               heading="CONTRACTS" if not leads else "CONTRACTS AND CARRIERS")
         if key in "BQ": return False
-        contract = PICK_KEYS.index(key)
-        records = []
-        for index in range(len(JOB_APPROACHES)):
-            _, _, (lo, hi), approach, heat, loss = job_terms(JobChoice(contract, index))
-            records.append(([approach, f"Execution payout ${lo*2}-${hi*2}; base Heat +{heat}; ordinary failure loses {min(loss, player.crew-1)} crew.",
-                             "Specialty/support effects appear in the preview."], True))
-        key = pick_record_page(p, "OPERATION APPROACH", records, width, height, before=chain,
-                               heading="APPROACHES")
-        if key in "BQ": return False
-        choice, step = JobChoice(contract, PICK_KEYS.index(key)), "case"
+        picked = PICK_KEYS.index(key)
+        if picked >= len(JOBS):
+            choice, step = leads[picked - len(JOBS)], "case"
+        else:
+            contract = picked
+            records = []
+            for index in range(len(JOB_APPROACHES)):
+                _, _, (lo, hi), approach, heat, loss = job_terms(JobChoice(contract, index))
+                records.append(([approach, f"Execution payout ${lo*2}-${hi*2}; base Heat +{heat}; ordinary failure loses {min(loss, player.crew-1)} crew.",
+                                 "Specialty/support effects appear in the preview."], True))
+            key = pick_record_page(p, "OPERATION APPROACH", records, width, height, before=chain,
+                                   heading="APPROACHES")
+            if key in "BQ": return False
+            choice, step = JobChoice(contract, PICK_KEYS.index(key)), "case"
     else:
-        choice = JobChoice(player.operation_contract, player.operation_approach)
         step = "prepare" if player.operation_stage == 1 else "execute"
-        name, _, _, approach, _, _ = job_terms(choice)
+        gone = bool(player.operation_lead) and cased is None
+        if player.operation_lead:
+            choice = cased
+            summary = operation_target(player, cased)
+        else:
+            choice = JobChoice(player.operation_contract, player.operation_approach)
+            name, _, _, approach, _, _ = job_terms(choice)
+            summary = f"{name} ({approach})"
         key = pick_record_page(p, "ACTIVE OPERATION", [
-            ([f"Continue: {step.title()}", f"{name} ({approach}); {'cased' if player.operation_stage == 1 else 'prepared'}.",
-              "Progress is saved. Preview the next step before Act."], True),
+            ([f"Continue: {step.title()}",
+              "The cased number is no longer in your book. Abandon to free the slot." if gone else
+              f"{summary}; {'cased' if player.operation_stage == 1 else 'prepared'}.",
+              "Progress is saved. Preview the next step before Act."], not gone),
             (["Abandon", "Free; forfeits all progress with no refund. Preview before Act."], True)],
             width, height, before=chain)
         if key in "BQ": return False
         if key == "2":
-            if show_text_pages(p, "ABANDON PREVIEW", [name, "Forfeit this operation and its paid preparation. No turn cost or refund. Back keeps it."], width, height, accept=True) != "A":
+            if show_text_pages(p, "ABANDON PREVIEW", [summary, "Forfeit this operation and its paid preparation. No turn cost or refund. Back keeps it."], width, height, accept=True) != "A":
                 return False
             abandon_operation(conn, player, now_utc())
             show_text_pages(p, "OPERATION ABANDONED", ["Slot clear. No turn spent."], width, height, onboarding=True)
             return True
+    carrier = isinstance(choice, Lead)
     # Do not silently switch a selected step/contract when another session acts.
     cards = operation_step_cards(p, player, step, choice, inner)
     if show_text_pages(p, step.upper() + " PREVIEW", [], width, height, cards=cards,
                        accept=operation_block_reason(player, step) is None) != "A":
         return False
     delta = ActionDelta()
-    result = resolve_operation(conn, player, now_utc(), step, rng, choice=choice, require_preview=True, delta=delta)
+    result = resolve_operation(conn, player, now_utc(), step, rng,
+                               choice=None if carrier else choice, lead=choice if carrier else None,
+                               require_preview=True, delta=delta)
     if result is None:
         lines = ["Casing saved. Next: Prepare for $50 and one turn." if step == "case" else "Preparation saved. Next: Execute for one turn."]
         busted = False
@@ -9442,14 +9976,26 @@ def do_operation(p: Palette, conn: sqlite3.Connection, player: Player, rng: rand
         name, success, payout, busted = result
         lines = [name, f"Operation succeeded! Gross payout ${payout}; slot clear." if success else
                  f"Execution failed. Recovery payout ${payout}; casing retained. Prepare again before retrying."]
-        scene = lambda: hack_scene_frames(
-            p, width, height, seed=_scene_seed(player.handle, player.season_number, player.turns_used, "operation"),
-            margin=_MARGIN,
-            handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
-            payout=payout, crew_lost=max(0, -delta.crew), operation=True, caption=lines[1], sub=name)
-    show_action_result(p, lines, delta, busted, width, height, player=player,
-                       scene=scene if result is not None else None,
-                       success=result[1] if result is not None else None)
+        if success and carrier and choice.perk:
+            lines.append(LEAD_PERKS[choice.perk][1])
+        seed = _scene_seed(player.handle, player.season_number, player.turns_used, "operation")
+        if carrier:
+            tier = lead_tier(choice)
+            scene = lambda: hack_scene_frames(
+                p, width, height, seed=seed, margin=_MARGIN, handle=player.handle, contract=tier,
+                approach=min(2, tier), success=success, payout=payout, crew_lost=max(0, -delta.crew),
+                operation=True, caption=lines[1], sub=name,
+                banner=_fit(LEAD_SYSTEMS[choice.system][0].upper(), 40),
+                prompt=LEAD_SYSTEMS[choice.system][2])
+        else:
+            scene = lambda: hack_scene_frames(
+                p, width, height, seed=seed, margin=_MARGIN,
+                handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
+                payout=payout, crew_lost=max(0, -delta.crew), operation=True, caption=lines[1], sub=name)
+    run_line(p, conn, player, rng, width, height,
+             show_action_result(p, lines, delta, busted, width, height, player=player,
+                                scene=scene if result is not None else None,
+                                success=result[1] if result is not None else None))
     return True
 
 
@@ -9489,13 +10035,18 @@ def do_recon(p: Palette, conn: sqlite3.Connection, player: Player, width: int, h
 OPERATION_STAGES = ("case", "prepare", "execute")
 
 
-def operation_chain(p: Palette, player: Player, width: int) -> list[str]:
+def operation_chain(p: Palette, player: Player, width: int, cased: Lead | None = None) -> list[str]:
     """`case ▸ prepare ▸ execute`, with the stage in hand lit, and what the rest
-    of it will cost from here."""
+    of it will cost from here. `cased` is the carrier a carrier operation holds."""
     rows = compose([progress_chain(p, list(OPERATION_STAGES), min(2, player.operation_stage)),
                     badge(p, OPERATION_STAGES[min(2, player.operation_stage)].upper(),
                           style=p.amber)], width)
-    if player.operation_stage:
+    if player.operation_stage and player.operation_lead:
+        rows += compose([label_value(p, "carrier", _fit(operation_target(player, cased),
+                                                        max(12, width - 18)), style=p.mint),
+                         badge(p, LEAD_TIERS[lead_tier(cased)][0].upper(),
+                               style=lead_tier_style(p, lead_tier(cased))) if cased else ""], width)
+    elif player.operation_stage:
         name, _, _, approach, _, _ = job_terms(JobChoice(player.operation_contract,
                                                          player.operation_approach))
         rows += compose([label_value(p, "contract", _fit(name, max(12, width - 18)), style=p.mint),
@@ -9507,12 +10058,13 @@ def do_operations_hub(p: Palette, conn: sqlite3.Connection, player: Player, rng:
                       width: int, height: int) -> bool:
     update_display_player(p, player, refresh_player(conn, player.user_id, now_utc()), width, height)
     inner = _panel_width(p, max(1, width - 1))
+    cased = cased_lead(conn, player)
     key = pick_record_page(p, "OPERATIONS / RECON", [
-        (["PvE operation", "Active: " + (JOBS[player.operation_contract][0]
+        (["PvE operation", "Active: " + (operation_target(player, cased)
                                          if player.operation_stage else "none")], True),
         (["Rival recon", "One turn buys a private 24-hour cash/crew snapshot."], True),
         (["Your dossiers", "Your latest ten unexpired rival snapshots, free."], True)],
-        width, height, before=[("", operation_chain(p, player, inner))])
+        width, height, before=[("", operation_chain(p, player, inner, cased))])
     if key in "BQ": return False
     if key == "1": return do_operation(p, conn, player, rng, width, height)
     if key == "2": return do_recon(p, conn, player, width, height)
@@ -9646,8 +10198,9 @@ def do_job(p: Palette, conn: sqlite3.Connection, player: Player, now: datetime,
             margin=_MARGIN,
             handle=player.handle, contract=choice.contract, approach=choice.approach, success=success,
             payout=payout, crew_lost=max(0, -delta.crew), caption=lines[1], sub=lines[0])
-        if not show_action_result(p, lines, delta, busted, w, height, player=player, scene=scene,
-                                  success=success, again=True):
+        key = show_action_result(p, lines, delta, busted, w, height, player=player, scene=scene,
+                                 success=success, again=True)
+        if run_line(p, conn, player, rng, w, height, key, again=True) != "A":
             return True
     return False
 
@@ -9913,7 +10466,7 @@ def resolve_sweep(p: Palette, width: int, *, amount: int = 0) -> None:
     out_line()
 
 
-def operation_step_cards(p: Palette, player: Player, step: str, choice: JobChoice,
+def operation_step_cards(p: Palette, player: Player, step: str, choice: JobChoice | Lead,
                          width: int) -> list[tuple[str, list[str]]]:
     """The stakes of the step about to be committed, not of the whole operation.
 
@@ -9927,7 +10480,8 @@ def operation_step_cards(p: Palette, player: Player, step: str, choice: JobChoic
                            badge(p, step.upper(), style=p.amber)], width))]
     terms = operation_preview_lines(player, step, choice)
     if step == "execute":
-        return chain + stakes_cards(p, "job", player, choice, width, operation=True, terms=terms)
+        return chain + stakes_cards(p, "carrier" if isinstance(choice, Lead) else "job", player,
+                                    choice, width, operation=True, terms=terms)
     cost = 50 if step == "prepare" else 0
     head = compose([label_value(p, "COST", "1 turn", style=p.ink),
                     label_value(p, "cash", f"${cost}", style=p.amber if cost else p.grey),
