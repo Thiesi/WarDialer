@@ -10,7 +10,7 @@ permissions:
 env:
   # The oldest NetBBS whose backups accept the current world schema. Raise it
   # with the release that changes WORLD_SCHEMA_VERSION.
-  NETBBS_MIN: "7.41.0"
+  NETBBS_MIN: "7.46.0"
 
 jobs:
   test:
