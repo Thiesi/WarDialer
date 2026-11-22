@@ -147,3 +147,83 @@ def test_cli_runs_without_host_and_reports_json_errors(world, tmp_path):
     assert human.returncode == 0 and "stored_season: 1" in human.stdout
     error = run("--admin", "status", "--world", str(tmp_path / "absent.db"), "--json")
     assert error.returncode == 1 and json.loads(error.stdout)["error"]
+
+
+# -- `--admin stats`: what callers have actually done -------------------------------
+
+class _Rolls:
+    """Every roll succeeds, every range pays its low end."""
+
+    def random(self):
+        return 0.0
+
+    def randint(self, low, high):
+        return low
+
+    def choice(self, seq):
+        return seq[0]
+
+
+def _played_world(world):
+    """Two callers with a few committed turns each, one of them busted."""
+    conn = wd.connect(world)
+    now = wd.now_utc()
+    try:
+        wd.ensure_schema(conn)
+        first = wd.refresh_player(conn, 1, now)
+        wd.resolve_trade_warez(conn, first, now, _Rolls())
+        wd.resolve_dial(conn, first, now, _Rolls())
+        lead = wd.read_leads(conn, 1, now)[0]
+        wd.resolve_lead(conn, first, lead, now, _Rolls())
+        wd.resolve_job(conn, first, now, _Rolls(), choice=wd.JobChoice(0, 0))
+        second = wd.load_or_create_player(conn, 2, "Other", now, first.season_number)
+        conn.execute("UPDATE players SET heat=100 WHERE user_id=2")
+        second = wd.refresh_player(conn, 2, now)
+        assert wd.resolve_trade_warez(conn, second, now, _Rolls())[1]      # busted
+    finally:
+        conn.close()
+
+
+def test_stats_sum_every_sheet_and_name_nobody(world):
+    _played_world(world)
+    before = world.read_bytes()
+    stats = wd.administer_world(world, "stats")
+    assert world.read_bytes() == before                                    # read-only
+    assert stats["players"] == 2 and stats["sheets"] == 2
+    totals = stats["totals"]
+    assert (totals["turns"], totals["trades"], totals["sweeps"]) == (5, 2, 1)
+    assert (totals["carrier_tries"], totals["carriers"], totals["contract_tries"]) == (1, 1, 1)
+    assert totals["busts"] == 1 and "best_rank" not in totals              # peaks are not sums
+    assert stats["per_100_turns"]["trades"] == 40.0 and stats["per_100_turns"]["busts"] == 20.0
+    assert stats["success"] == {"carriers": 1.0, "contracts": 1.0, "operations": None, "raids": None}
+    assert stats["badge_holders"]["carrier"] == 1 and stats["badge_holders"]["busted"] == 1
+    assert set(stats["badge_holders"]) == {key for key, *_ in wd.BADGES}
+    rank = stats["season_rank"]
+    assert rank["players"] == 2 and rank["ranked"] == 1 and rank["top"] > 0
+    assert sum(rank["tiers"].values()) == 2
+    # Aggregate only: no handle and no account ID anywhere in it.
+    text = json.dumps(stats)
+    assert "Caller" not in text and "Other" not in text and "user_id" not in text
+
+
+def test_stats_cap_a_rate_when_a_sheet_predates_attempt_counting(world):
+    _played_world(world)
+    conn = wd.connect(world)
+    conn.execute("UPDATE career SET data=? WHERE user_id=1",
+                 (json.dumps({"stats": {"carriers": 9, "carrier_tries": 3}, "badges": {}}),))
+    conn.commit()
+    conn.close()
+    assert wd.administer_world(world, "stats")["success"]["carriers"] == 1.0
+
+
+def test_stats_on_a_fresh_world_and_through_the_command_line(world):
+    stats = wd.administer_world(world, "stats")
+    assert stats["sheets"] == 0 and stats["totals"] == {} and stats["per_100_turns"] == {}
+    rank = stats["season_rank"]
+    assert (rank["players"], rank["ranked"], rank["top"]) == (1, 0, 0)   # one caller, nothing earned
+    result = subprocess.run([sys.executable, str(DOOR), "--world", str(world), "--admin", "stats", "--json"],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0 and json.loads(result.stdout)["sheets"] == 0
+    plain = subprocess.run([sys.executable, str(DOOR), "--world", str(world), "--admin", "stats"],
+                           capture_output=True, text=True, timeout=60)
+    assert plain.returncode == 0 and "badge_holders:" in plain.stdout

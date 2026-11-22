@@ -42,6 +42,9 @@ SCENARIOS = {
     "repeated_victim": "Two mature callers alternate raids on one mature victim who never logs in again.",
     "bust_recovery": "Depleted-crew fixture takes an actual forced bust, then recruits when affordable or trades.",
     "dialer": "One caller buys the next rig when it leaves $150, hacks the best carrier at >=55% odds, sweeps while the book holds under three, recruits when able, else runs the best Cautious contract at >=60%.",
+    "casual": "The dialer policy, visiting three days a week (days 0, 2 and 4 of each seven).",
+    "greedy": "One caller chases payout and ignores Heat: buys the next rig when it leaves $100, hacks the best-paying carrier at >=30% odds, sweeps while the book holds under three, recruits every third turn when able, else runs the best Bold contract at >=45%.",
+    "rider": "The greedy policy while the action's Heat keeps the caller at or under the bust line; past it, the hottest contract approach that still fits, then a sweep, a recruit, and a Trade last.",
 }
 
 
@@ -131,6 +134,8 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                     period = {1: 1, 2: 3, 3: 7}.get(uid, 1) if name == "low_attendance" else 1
                     if day < join_day or (day - join_day) % period:
                         continue
+                    if name == "casual" and day % 7 not in (0, 2, 4):
+                        continue
                     # Fixed caller order is explicit; the two exploit probes
                     # interleave their actors so repeated targeting/captures occur.
                     interleaved = name in {"capture_trading", "repeated_victim"}
@@ -159,7 +164,27 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                             action = "recruit"
                         elif player.operation_stage != 1 or player.cash >= 50:
                             action = ("case", "prepare", "execute")[player.operation_stage]
-                    elif name == "dialer":
+                    elif name in {"greedy", "rider"}:
+                        leads = wd.read_leads(conn, uid, now)
+                        # The rider only takes what leaves it at or under the bust line.
+                        room = wd.HEAT_BUST_THRESHOLD - player.heat if name == "rider" else 10_000
+                        ready = [lead for lead in leads
+                                 if wd.success_chance(player.crew, lead.difficulty) >= .30
+                                 and wd.adjusted_heat(player, "job", wd.lead_terms(lead)[3]) <= room]
+                        if (player.rig < len(wd.RIGS) - 1
+                                and player.cash >= wd.RIGS[player.rig + 1][1] + 100):
+                            action = "rig"
+                        elif ready:
+                            action, target = "carrier", max(ready, key=lambda lead: wd.lead_terms(lead)[2][1])
+                        elif len(leads) < 3 and wd.DIAL_HEAT <= room:
+                            action = "sweep"
+                        elif turn % 3 == 0 and player.cash >= wd.recruit_cost(player):
+                            action = "recruit"
+                        elif wd.adjusted_heat(player, "job", wd.JOB_APPROACHES[0][2]) <= room:
+                            action = "job"
+                        elif player.cash >= wd.recruit_cost(player):
+                            action = "recruit"
+                    elif name in {"dialer", "casual"}:
                         leads = wd.read_leads(conn, uid, now)
                         ready = [lead for lead in leads
                                  if wd.success_chance(player.crew, lead.difficulty) >= .55]
@@ -222,10 +247,18 @@ def run_scenario(name: str, *, days: int = 14, seed: int = 362) -> dict:
                             totals[uid].update(raid_successes=int(success), stolen_cash=amount if success else 0)
                         elif action == "job":
                             choice = wd.JobChoice()
-                            if name in {"jobs_ladder", "dialer"}:
+                            if name in {"jobs_ladder", "dialer", "casual"}:
                                 candidates = [i for i, (_, difficulty, _) in enumerate(wd.JOBS)
                                               if wd.success_chance(player.crew, difficulty) >= .6]
                                 choice = wd.JobChoice(max(candidates, default=0), 0)
+                            elif name in {"greedy", "rider"}:
+                                candidates = [i for i, (_, difficulty, _) in enumerate(wd.JOBS)
+                                              if wd.success_chance(player.crew, difficulty) >= .45]
+                                room = wd.HEAT_BUST_THRESHOLD - player.heat if name == "rider" else 10_000
+                                # Bold while it fits; then the hottest approach that still does.
+                                fits = [index for index, (_, _, heat, _) in enumerate(wd.JOB_APPROACHES)
+                                        if wd.adjusted_heat(player, "job", heat) <= room]
+                                choice = wd.JobChoice(max(candidates, default=0), max(fits, default=0))
                             _, success, _, busted = wd.resolve_job(conn, player, now, rngs[uid], choice=choice, delta=delta)
                             totals[uid][f"contract_{choice.contract + 1}"] += 1
                             totals[uid]["job_successes"] += int(success)

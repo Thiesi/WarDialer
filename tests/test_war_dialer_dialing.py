@@ -418,7 +418,9 @@ def test_the_generic_counters_feed_the_sheet_and_a_bust_is_counted(world):
     assert (stats["recruits"], stats["contracts"], stats["captures"], stats["busts"]) == (1, 1, 1, 1)
     assert stats["most_held"] == 1 and stats["most_crew"] >= 3
     assert {"root", "busted"} <= set(wd.read_career(conn, 1)["badges"])
-    assert "bust_flag" not in player.__dict__
+    # The rules' own tally is read once and never rides on the snapshot.
+    assert "deeds" not in player.__dict__
+    assert (stats["turns"], stats["trades"], stats["contract_tries"], stats["root_tries"]) == (4, 1, 1, 1)
 
 
 def test_a_rejected_action_leaves_no_trace_on_the_sheet(world):
